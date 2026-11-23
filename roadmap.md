@@ -1,6 +1,6 @@
 # Roadmap
-- [ ] Moteur de terminal stateful (hôtes, fs, users, mots de passe, services, paquets)
-- [ ] Sous-systèmes : git, docker, kubectl, ansible, terraform, jenkins, bases de données
-- [ ] Vérification par état pour les 100 labs + bouton Vérifier
-- [ ] Terminal xterm.js + éditeur vi/nano
-- [ ] Test automatique : chaque lab réussi avec la solution, échoue sur mauvais serveur
+- [x] Moteur de terminal avec état isolé par hôte
+- [x] Sous-systèmes Git, Docker, Kubernetes, Jenkins, Ansible, Terraform et bases de données
+- [x] Configuration initiale et vérification par état des 100 labs
+- [x] Terminal xterm.js et éditeur vi/nano
+- [x] Tests des 100 solutions et des cas d’échec de validation

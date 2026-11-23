@@ -1,6 +1,6 @@
 // Interpréteur de shell : parsing (quotes, pipes, &&, ||, ;, redirections), sessions SSH/sudo, permissions.
 import { type Ask, CMDS, type Ctx, type Frame, type G, type R, err, ok } from "./types";
-import { type Host, type World, base, children, isDir, mkdirp, norm, parent, readFile, writeFile } from "./world";
+import { type FNode, type Host, type World, base, children, isDir, mkdirp, norm, parent, readFile, writeFile } from "./world";
 
 type Tok = { v: string; op?: boolean; q?: boolean };
 export function tokenize(s: string, env: Record<string, string>): Tok[] | string {
@@ -18,7 +18,7 @@ export function tokenize(s: string, env: Record<string, string>): Tok[] | string
     if (["&&", "||", ">>", "2>"].includes(two)) { push(); if (two === "2>") { const m = /^2>(&1|\s*\S+)/.exec(s.slice(i)); i += m ? m[0].length : 2; continue; } out.push({ v: two, op: true }); i += 2; continue; }
     if ("|;><&".includes(ch)) { push(); out.push({ v: ch, op: true }); i++; continue; }
     if (ch === "$" ) { const m = /^\$\(date[^)]*\)|^\$\{?\w+\}?/.exec(s.slice(i)); if (m) { cur += expand(m[0]); has = true; i += m[0].length; continue; } }
-    if (ch === "~" && !has && (s[i + 1] === undefined || s[i + 1] === "/" || /\s/.test(s[i + 1]!))) { cur += env.HOME ?? "~"; has = true; i++; continue; }
+    if (ch === "~" && !has && (s[i + 1] === undefined || s[i + 1] === "/" || /\s/.test(s[i + 1]!))) { cur += env["HOME"] ?? "~"; has = true; i++; continue; }
     cur += ch; has = true; i++;
   }
   push();
@@ -53,6 +53,7 @@ export class Shell {
     return { w: this.w, sh: this, f, h: f.host, user, stdin, root: user === "root" };
   }
   *run(input: string, f: Frame, asUser?: string): G {
+    const interactive = this.f === f;
     const t = tokenize(input, this.envFor(f));
     if (typeof t === "string") return err(t, 2);
     // séquence : liste [pipeline, opérateur précédent]
@@ -64,7 +65,7 @@ export class Shell {
       if (!s.toks.length) continue;
       if (s.op === "&&" && code !== 0) continue;
       if (s.op === "||" && code === 0) continue;
-      const r = yield* this.pipeline(s.toks, this.f === f ? f : this.f, asUser);
+      const r = yield* this.pipeline(s.toks, interactive ? this.f : f, asUser);
       if (r.out) out.push(r.out);
       code = r.code;
     }
@@ -78,22 +79,37 @@ export class Shell {
       const args: string[] = []; let redir: { mode: ">" | ">>"; path: string } | undefined; let inFile: string | undefined;
       for (let i = 0; i < p.length; i++) {
         const x = p[i]!;
-        if (x.op && (x.v === ">" || x.v === ">>")) { redir = { mode: x.v, path: p[++i]?.v ?? "" }; continue; }
-        if (x.op && x.v === "<") { inFile = p[++i]?.v; continue; }
+        if (x.op && [">", ">>", "<"].includes(x.v)) {
+          const path = p[++i];
+          if (!path || path.op || !path.v) return err("bash: syntax error near unexpected token `newline'", 2);
+          if (x.v === "<") inFile = path.v;
+          else redir = { mode: x.v === ">>" ? ">>" : ">", path: path.v };
+          continue;
+        }
         if (!x.q && x.v.includes("*")) { args.push(...glob(f.host, f.cwd, x.v)); continue; }
         args.push(x.v);
       }
-      if (inFile !== undefined) { const c = readFile(f.host, abs(f, inFile)); if (c === undefined) return err(`bash: ${inFile}: No such file or directory`); stdin = c; }
+      const ctx = this.ctx(f, "", asUser);
+      if (inFile !== undefined) {
+        const path = abs(f, inFile);
+        if (!canRead(ctx, path)) return err(`bash: ${inFile}: Permission denied`);
+        const content = vread(ctx, path);
+        if (content === undefined) return err(`bash: ${inFile}: No such file or directory`);
+        stdin = content;
+      }
+      const outputPath = redir ? abs(f, redir.path) : undefined;
+      if (outputPath && outputPath !== "/dev/null") {
+        if (!isDir(f.host, parent(outputPath))) return err(`bash: ${redir!.path}: No such file or directory`);
+        if (isDir(f.host, outputPath)) return err(`bash: ${redir!.path}: Is a directory`);
+        if (!canWrite(ctx, outputPath)) return err(`bash: ${redir!.path}: Permission denied`);
+        if (redir?.mode === ">" || !f.host.fs[outputPath]) writeFile(f.host, outputPath, "", ctx.user);
+      }
       last = yield* this.exec(args, f, stdin, asUser);
-      if (redir) {
-        const path = abs(f, redir.path);
-        if (path === "/dev/null") { stdin = ""; last = { out: "", code: last.code }; continue; }
-        const ctx = this.ctx(f, "", asUser);
-        if (!canWrite(ctx, path)) return err(`bash: ${redir.path}: Permission denied`);
-        if (!isDir(f.host, parent(path))) return err(`bash: ${redir.path}: No such file or directory`);
-        const prev = redir.mode === ">>" ? readFile(f.host, path) ?? "" : "";
-        writeFile(f.host, path, prev + (last.out ? last.out + "\n" : ""), ctx.user);
-        last = { out: "", code: last.code };
+      if (outputPath) {
+        if (outputPath !== "/dev/null" && last.code === 0 && last.out) {
+          writeFile(f.host, outputPath, (readFile(f.host, outputPath) ?? "") + last.out + "\n", ctx.user);
+        }
+        if (last.code === 0) last = { out: "", code: last.code };
       }
       stdin = last.out;
     }
@@ -123,28 +139,39 @@ function glob(h: Host, cwd: string, pat: string): string[] {
 }
 
 // ---------- Permissions ----------
-function nearest(h: Host, p: string) { let c = norm(p); while (!h.fs[c] && c !== "/") c = parent(c); return h.fs[c]!; }
+function nearest(h: Host, p: string) { let c = norm(p); while (!h.fs[c] && c !== "/") c = parent(c); return h.fs[c]; }
+function permissions(c: Ctx, node: FNode) {
+  if (node.owner === c.user) return node.mode >> 6 & 7;
+  const bits = (value: string) => (value.includes("r") ? 4 : 0) | (value.includes("w") ? 2 : 0) | (value.includes("x") ? 1 : 0);
+  const named = node.acl?.[`user:${c.user}`];
+  if (named !== undefined) return bits(named);
+  const member = (group: string) => {
+    const assigned = c.h.groups[group];
+    return !!assigned && (c.h.users[c.user]?.gid === assigned.gid || assigned.members.includes(c.user));
+  };
+  const groupValues = Object.entries(node.acl ?? {}).filter(([key]) => key.startsWith("group:") && member(key.slice(6)));
+  if (member(node.group) || groupValues.length) {
+    return groupValues.reduce((p, [, acl]) => p | bits(acl), member(node.group) ? node.mode >> 3 & 7 : 0);
+  }
+  return node.mode & 7;
+}
+
 export function canWrite(c: Ctx, p: string): boolean {
   if (c.root) return true;
   const n = c.h.fs[norm(p)] ?? nearest(c.h, parent(p));
-  if (n.owner === c.user) return (n.mode & 0o200) !== 0;
-  const grp = c.h.groups[n.group]?.members.includes(c.user);
-  if (grp && n.mode & 0o020) return true;
-  return (n.mode & 0o002) !== 0;
+  return !!n && (permissions(c, n) & 2) !== 0;
 }
 export function canRead(c: Ctx, p: string): boolean {
   if (c.root) return true;
   if (p === "/etc/shadow") return false;
-  const n = c.h.fs[norm(p)]; if (!n) return true;
-  if (n.owner === c.user) return (n.mode & 0o400) !== 0;
-  if (c.h.groups[n.group]?.members.includes(c.user)) return (n.mode & 0o040) !== 0;
-  return (n.mode & 0o004) !== 0;
+  const n = c.h.fs[norm(p)];
+  return !n || (permissions(c, n) & 4) !== 0;
 }
 export function canExec(c: Ctx, p: string): boolean {
-  const n = c.h.fs[norm(p)]; if (!n) return false;
+  const n = c.h.fs[norm(p)];
+  if (!n) return false;
   if (c.root) return (n.mode & 0o111) !== 0;
-  const bits = n.owner === c.user ? 0o500 : c.h.groups[n.group]?.members.includes(c.user) ? 0o050 : 0o005;
-  return (n.mode & bits) === bits;
+  return (permissions(c, n) & 5) === 5;
 }
 // lecture des fichiers virtuels (/etc/passwd, /etc/group...)
 export function vread(c: Ctx, p: string): string | undefined {
@@ -174,11 +201,13 @@ export function* runScript(c: Ctx, path: string, args: string[], direct: boolean
   const out: string[] = [];
   const f: Frame = { ...c.f, env: { ...c.f.env, ...Object.fromEntries(args.map((a, i) => [String(i + 1), a])) }, batch: true };
   let code = 0;
+  let failFast = false;
   for (const raw of content.split("\n")) {
     const l = raw.trim(); if (!l || l.startsWith("#")) continue;
-    if (/^set\s+-e/.test(l)) continue;
+    if (/^set\s+-e$/.test(l)) { failFast = true; continue; }
     const r = yield* c.sh.run(l, f, c.root ? "root" : undefined);
     if (r.out) out.push(r.out); code = r.code;
+    if (code && failFast) break;
   }
   return { out: out.join("\n"), code };
 }

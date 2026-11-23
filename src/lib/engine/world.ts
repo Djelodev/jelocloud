@@ -1,7 +1,7 @@
 // Modèle du monde simulé : hôtes, système de fichiers, utilisateurs, paquets, services, réseau.
-export type FNode = { type: "f" | "d"; content: string; mode: number; owner: string; group: string };
+export type FNode = { type: "f" | "d"; content: string; mode: number; owner: string; group: string; acl?: Record<string, string> };
 export type User = { name: string; uid: number; gid: number; home: string; shell: string; password: string; expire?: string; groups: string[] };
-export type Svc = { active: boolean; enabled: boolean; failed?: string };
+export type Svc = { active: boolean; enabled: boolean; failed?: string; config?: string };
 export type Db = { databases: Set<string>; users: Record<string, string>; grants: { user: string; db: string }[] };
 export type Container = { id: string; name: string; image: string; running: boolean; ports: { h: number; c: number }[]; network: string; host: Host; env: Record<string, string>; cmd: string };
 export type Image = { ref: string; id: string; fs: Record<string, FNode>; pkgs: string[]; cmd: string; expose: number[]; env: Record<string, string>; workdir: string };
@@ -95,17 +95,17 @@ export function addUser(h: Host, name: string, opts: Partial<User> = {}) {
 }
 export function makeHost(name: string, ip: string, os: "centos" | "ubuntu" = "centos", kind: "vm" | "container" = "vm"): Host {
   const h: Host = {
-    name, ip, os, kind, users: {}, groups: { root: { gid: 0, members: [] }, wheel: { gid: 10, members: [] } }, fs: {}, pkgs: new Set(), svcs: {},
+    name, ip, os, kind, users: {}, groups: { root: { gid: 0, members: [] }, wheel: { gid: 10, members: [] } }, fs: { "/": { type: "d", content: "", mode: 0o755, owner: "root", group: "root" } }, pkgs: new Set(), svcs: {},
     crontabs: {}, iptables: [], iptSaved: false, selinuxRuntime: "enforcing", db: { databases: new Set(["mysql", "information_schema"]), users: {}, grants: [] },
     pg: { databases: new Set(["postgres"]), users: { postgres: "" }, grants: [] }, docker: { images: {}, containers: [], networks: { bridge: { driver: "bridge" }, host: { driver: "host" }, none: { driver: "null" } } },
     journal: {}, extraListeners: [],
   };
-  h.users.root = { name: "root", uid: 0, gid: 0, home: "/root", shell: "/bin/bash", password: "root", groups: [] };
+  h.users["root"] = { name: "root", uid: 0, gid: 0, home: "/root", shell: "/bin/bash", password: "root", groups: [] };
   for (const d of ["/root", "/home", "/tmp", "/etc", "/var/log", "/opt", "/usr/bin", "/usr/local/bin", "/usr/src", "/var/www", "/etc/ssh", "/etc/selinux"]) mkdirp(h, d);
   h.fs["/tmp"]!.mode = 0o1777;
   if (kind === "vm") {
     writeFile(h, "/etc/ssh/sshd_config", DEFAULT_SSHD, "root", 0o600);
-    h.svcs.sshd = { active: true, enabled: true };
+    h.svcs["sshd"] = { active: true, enabled: true, config: DEFAULT_SSHD };
     writeFile(h, "/etc/selinux/config", "# This file controls the state of SELinux on the system.\nSELINUX=enforcing\nSELINUXTYPE=targeted\n");
     writeFile(h, "/etc/hostname", name + "\n");
     for (const p of ["openssh-clients", "selinux-policy"]) h.pkgs.add(p);
@@ -123,15 +123,15 @@ export type World = {
 };
 
 export function newWorld(): World {
-  const hosts: Record<string, Host> = {};
+  const hosts: Record<string, Host> = Object.create(null);
   for (const [name, c] of Object.entries(CREDS)) {
     const h = makeHost(name, c.ip);
     const u = addUser(h, c.user, { password: c.pass, groups: ["wheel"] });
-    h.groups.wheel!.members.push(c.user);
+    h.groups["wheel"]!.members.push(c.user);
     mkdirp(h, u.home, c.user);
     hosts[name] = h;
   }
-  const j = hosts.jump_host!;
+  const j = hosts["jump_host"]!;
   for (const p of ["git", "python3-pip", "sshpass"]) j.pkgs.add(p);
   writeFile(j, "/home/thor/.bash_history", "", "thor");
   return {
@@ -146,9 +146,8 @@ export function newWorld(): World {
 
 export function resolveHost(w: World, name: string, from?: Host): Host | undefined {
   const n = name.toLowerCase().split(".")[0]!;
-  if ((n === "localhost" || n === "127") && from) return from;
-  if (name === "127.0.0.1" && from) return from;
-  if (w.hosts[n]) return w.hosts[n];
+  if ((n === "localhost" || name === "127.0.0.1") && from) return from;
+  if (Object.hasOwn(w.hosts, n)) return w.hosts[n];
   return Object.values(w.hosts).find((h) => h.ip === name);
 }
 

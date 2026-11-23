@@ -1,29 +1,23 @@
-# Welcome to your Lovable project
+# Jelo Cloud
 
-This project was built with [Lovable](https://lovable.dev).
+Parcours de 100 labs DevOps en français avec un terminal simulé dans le navigateur. Le bouton **Vérifier** contrôle l’état des ressources du lab. La progression est enregistrée dans le navigateur.
 
-## Build with Lovable
+## Développement local
 
-Open your project in the [Lovable editor](https://lovable.dev) and keep building.
-
-- **Ship faster**: describe what you want to build and Lovable handles the code.
-- **Stay in sync**: connect the project to GitHub and every change made in Lovable is committed straight to your repository.
-- **Full ownership**: this code is yours. Push to your repository and your changes sync back into Lovable, ready for your next prompt.
-
-## Development
-
-Prefer working locally? You need Node.js and npm — [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating).
+Avec Node.js 22.12 ou supérieur et Bun, installe les dépendances puis démarre le serveur.
 
 ```sh
-git clone <this-repository-url>
-cd <repository-name>
-npm i
-npm run dev
+bun install --frozen-lockfile
+bun run dev
 ```
 
-## Built with
+Ouvre [http://localhost:8080](http://localhost:8080).
 
-- TanStack Start
-- TypeScript
-- React
-- Tailwind CSS
+```sh
+bun run test
+bun run build
+```
+
+## Déploiement sur Vercel
+
+Importe le dépôt `Djelodev/jelocloud` dans Vercel. Le fichier `vercel.json` sélectionne TanStack Start et Nitro détecte l’environnement Vercel au build. L’application ne nécessite aucune variable d’environnement pour les labs.

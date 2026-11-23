@@ -1,9 +1,9 @@
 // Docker réaliste : images, conteneurs (chacun avec son propre système), ports, réseaux, build de Dockerfile, compose.
-import YAML from "yaml";
+import { parse } from "yaml";
 import { CMDS, type Ctx, type G, err, ok, opt } from "./types";
 import { abs } from "./shell";
-import { type Container, type Host, type Image, children, installPkg, isDir, makeHost, mkdirp, norm, parent, readFile, writeFile, copyTree } from "./world";
-import { startSvc } from "./services";
+import { type Container, type Host, type Image, base, children, installPkg, isDir, makeHost, mkdirp, norm, parent, readFile, writeFile, copyTree } from "./world";
+import { listeners, startSvc } from "./services";
 
 const KNOWN = ["nginx", "httpd", "ubuntu", "busybox", "python", "mysql", "mariadb", "redis", "node", "alpine", "centos", "php", "grafana/grafana", "tomcat", "jenkins/jenkins", "postgres", "wordpress", "kodekloud/webapp-color", "debian"];
 let n = 0;
@@ -15,7 +15,7 @@ function baseImage(r: string): Image | null {
   let cmd = "bash"; const pkgs: string[] = []; const expose: number[] = []; let workdir = "/";
   if (name === "nginx") { installPkg(t, "nginx"); writeFile(t, "/usr/share/nginx/html/index.html", "<!DOCTYPE html>\n<html><head><title>Welcome to nginx!</title></head><body><h1>Welcome to nginx!</h1></body></html>\n"); pkgs.push("nginx"); cmd = "nginx -g 'daemon off;'"; expose.push(80); }
   if (name === "httpd") { installPkg(t, "httpd"); writeFile(t, "/etc/httpd/conf/httpd.conf", 'Listen 80\nDocumentRoot "/usr/local/apache2/htdocs"\n'); writeFile(t, "/usr/local/apache2/htdocs/index.html", "<html><body><h1>It works!</h1></body></html>\n"); pkgs.push("httpd"); cmd = "httpd-foreground"; expose.push(80); }
-  if (name === "python") { cmd = "python3"; workdir = "/"; }
+  if (name === "python") { cmd = "python3"; workdir = "/"; pkgs.push("python-runtime"); }
   if (name === "mysql" || name === "mariadb") { cmd = "mysqld"; expose.push(3306); }
   if (name === "redis") { cmd = "redis-server"; expose.push(6379); }
   if (name === "tomcat") { cmd = "catalina.sh run"; expose.push(8080); }
@@ -34,9 +34,9 @@ function svcFor(cmd: string): string | null {
 function boot(c: Ctx, ct: Container, img: Image, interactive: boolean): void {
   const s = svcFor(ct.cmd);
   const hh = ct.host;
-  if (s === "nginx" || s === "apache2" || s === "httpd") { installPkg(hh, s); hh.svcs[s]!.active = false; const e = startSvc(c.w, hh, s); ct.running = !e; if (e) (hh.journal.main ??= []).push(e); return; }
-  if (s === "python") { const file = /python3?\s+(\S+\.py)/.exec(ct.cmd)?.[1]; const src = file ? readFile(hh, norm((img.workdir || "/") + "/" + file)) ?? readFile(hh, file) : undefined; if (!src) { ct.running = interactive; if (file) (hh.journal.main ??= []).push(`python3: can't open file '${file}': [Errno 2] No such file or directory`); return; } const port = +(/port\s*=\s*(\d+)/.exec(src)?.[1] ?? 5000); const msg = /return\s+["'](.+?)["']/.exec(src)?.[1] ?? "Hello"; hh.extraListeners = [{ port, proc: "app:" + msg }]; ct.running = true; (hh.journal.main ??= []).push(` * Running on http://0.0.0.0:${port}`); return; }
-  if (s === "mysqld") { if (!ct.env.MYSQL_ROOT_PASSWORD && !ct.env.MYSQL_ALLOW_EMPTY_PASSWORD && !ct.env.MARIADB_ROOT_PASSWORD) { ct.running = false; (hh.journal.main ??= []).push("error: database is uninitialized and password option is not specified\n  You need to specify one of MYSQL_ROOT_PASSWORD, MYSQL_ALLOW_EMPTY_PASSWORD and MYSQL_RANDOM_ROOT_PASSWORD"); return; } hh.extraListeners = [{ port: 3306, proc: "mysqld" }]; ct.running = true; return; }
+  if (s === "nginx" || s === "apache2" || s === "httpd") { installPkg(hh, s); hh.svcs[s]!.active = false; const e = startSvc(c.w, hh, s); ct.running = !e; if (e) (hh.journal["main"] ??= []).push(e); return; }
+  if (s === "python") { const file = /python3?\s+(\S+\.py)/.exec(ct.cmd)?.[1]; const src = file ? readFile(hh, norm((img.workdir || "/") + "/" + file)) ?? readFile(hh, file) : undefined; if (!src) { ct.running = interactive; if (file) (hh.journal["main"] ??= []).push(`python3: can't open file '${file}': [Errno 2] No such file or directory`); return; } if (/from flask import|import flask/i.test(src) && !hh.pkgs.has("pip:flask")) { ct.running = false; (hh.journal["main"] ??= []).push("ModuleNotFoundError: No module named 'flask'"); return; } const port = +(/port\s*=\s*(\d+)/.exec(src)?.[1] ?? 5000); const msg = /return\s+["'](.+?)["']/.exec(src)?.[1] ?? "Hello"; hh.extraListeners = [{ port, proc: "app:" + msg }]; ct.running = true; (hh.journal["main"] ??= []).push(` * Running on http://0.0.0.0:${port}`); return; }
+  if (s === "mysqld") { if (!ct.env["MYSQL_ROOT_PASSWORD"] && !ct.env["MYSQL_ALLOW_EMPTY_PASSWORD"] && !ct.env["MARIADB_ROOT_PASSWORD"]) { ct.running = false; (hh.journal["main"] ??= []).push("error: database is uninitialized and password option is not specified\n  You need to specify one of MYSQL_ROOT_PASSWORD, MYSQL_ALLOW_EMPTY_PASSWORD and MYSQL_RANDOM_ROOT_PASSWORD"); return; } hh.extraListeners = [{ port: 3306, proc: "mysqld" }]; ct.running = true; return; }
   if (s === "redis" || s === "tomcat") { hh.extraListeners = [{ port: s === "redis" ? 6379 : 8080, proc: s }]; ct.running = true; return; }
   ct.running = interactive || /sleep|tail -f/.test(ct.cmd);
 }
@@ -45,7 +45,7 @@ function makeContainer(c: Ctx, img: Image, o: { name?: string; ports: { h: numbe
   const name = o.name ?? ["quirky_turing", "eager_hopper", "zen_lovelace", "brave_curie"][d.containers.length % 4]! + d.containers.length;
   if (d.containers.some((x) => x.name === name)) return `docker: Error response from daemon: Conflict. The container name "/${name}" is already in use by container "${d.containers.find((x) => x.name === name)!.id}". You have to remove (or rename) that container to be able to reuse that name.`;
   if (!d.networks[o.network]) return `docker: Error response from daemon: network ${o.network} not found.`;
-  for (const p of o.ports) { if (d.containers.some((x) => x.running && x.ports.some((q) => q.h === p.h)) || Object.values(h.svcs).some(() => false)) return `docker: Error response from daemon: driver failed programming external connectivity on endpoint ${name}: Bind for 0.0.0.0:${p.h} failed: port is already allocated.`; }
+  for (const p of o.ports) { if (listeners(h).some((item) => item.port === p.h)) return `docker: Error response from daemon: driver failed programming external connectivity on endpoint ${name}: Bind for 0.0.0.0:${p.h} failed: port is already allocated.`; }
   const id = rid(); const hh = makeHost(id.slice(0, 12), "172.17.0." + (d.containers.length + 2), "ubuntu", "container");
   Object.assign(hh.fs, structuredClone(img.fs)); for (const p of img.pkgs) hh.pkgs.add(p);
   for (const p of img.pkgs) { const def = p === "nginx" ? "nginx" : p; if (!hh.svcs[def] && ["nginx", "httpd", "apache2"].includes(def)) hh.svcs[def] = { active: false, enabled: false }; }
@@ -91,7 +91,26 @@ function* build(c: Ctx, tag: string, ctxDir: string, file: string): G {
       const r = yield* c.sh.run(cmd, { host: t, user: "root", cwd: im.workdir, env: { ...im.env }, batch: true, container: { id: "build", name: "build", image: tag, running: true, ports: [], network: "bridge", host: t, env: {}, cmd: "" } });
       if (r.out) log.push(r.out.split("\n").slice(-3).map((x) => "#" + (i + 1) + " " + x).join("\n"));
       if (r.code !== 0) return err(log.join("\n") + `\nERROR: failed to solve: process "/bin/sh -c ${cmd}" did not complete successfully: exit code: ${r.code}`);
-    } else if (ins === "COPY" || ins === "ADD") { const parts = arg.split(/\s+/); const dst = parts.pop()!; for (const s of parts) { const sp2 = norm(ctxDir + "/" + s); if (!h.fs[sp2]) return err(`ERROR: failed to solve: failed to compute cache key: failed to calculate checksum of ref: "/${s}": not found`); const target = dst.endsWith("/") || isDir(t, dst) ? norm((dst.startsWith("/") ? dst : im.workdir + "/" + dst) + "/" + (isDir(h, sp2) && s === "." ? "" : s.split("/").pop())) : norm(dst.startsWith("/") ? dst : im.workdir + "/" + dst); if (isDir(h, sp2)) { for (const ch of children(h, sp2)) copyTree(h, sp2 + "/" + ch, t, norm(target + "/" + ch)); } else copyTree(h, sp2, t, target); } }
+    } else if (ins === "COPY" || ins === "ADD") {
+      let parts: string[];
+      try { parts = arg.startsWith("[") ? JSON.parse(arg) as string[] : arg.split(/\s+/); }
+      catch { return err(`ERROR: invalid JSON in ${ins}`); }
+      const destination = parts.pop();
+      if (!destination || !parts.length) return err(`ERROR: ${ins} requires sources and a destination`);
+      const folder = norm(destination.startsWith("/") ? destination : im.workdir + "/" + destination);
+      const directory = destination.endsWith("/") || isDir(t, folder);
+      if (parts.length > 1 && !directory) return err(`ERROR: multiple sources require a directory destination`);
+      for (const source of parts) {
+        const sourcePath = norm(ctxDir + "/" + source);
+        if (!h.fs[sourcePath] || sourcePath !== ctxDir && !sourcePath.startsWith(ctxDir + "/") && ctxDir !== "/") {
+          return err(`ERROR: failed to solve: "/${source}": not found in build context`);
+        }
+        if (isDir(h, sourcePath)) {
+          mkdirp(t, folder);
+          for (const child of children(h, sourcePath)) copyTree(h, sourcePath + "/" + child, t, folder + "/" + child);
+        } else copyTree(h, sourcePath, t, directory ? norm(folder + "/" + base(sourcePath)) : folder);
+      }
+    }
     else if (ins === "WORKDIR") { im.workdir = norm(arg.startsWith("/") ? arg : im.workdir + "/" + arg); mkdirp(t, im.workdir); }
     else if (ins === "ENV") { const [k, ...v] = arg.includes("=") ? arg.split("=") : arg.split(/\s+/); im.env[k!] = v.join(" ").replace(/^["']|["']$/g, ""); }
     else if (ins === "EXPOSE") im.expose.push(...arg.split(/\s+/).map((x) => parseInt(x)));
@@ -109,13 +128,15 @@ function* compose(c: Ctx, a: string[]): G {
   if (!file) return err("no configuration file provided: not found");
   const path = abs(c.f, file); const dir = parent(path);
   let doc: { services?: Record<string, { image?: string; build?: string | { context: string }; container_name?: string; ports?: (string | number)[]; volumes?: string[]; environment?: Record<string, string> | string[]; command?: string }> };
-  try { doc = YAML.parse(readFile(c.h, path) ?? "") ?? {}; } catch (e) { return err(`yaml: ${(e as Error).message.split("\n")[0]}`); }
+  try { doc = parse(readFile(c.h, path) ?? "") ?? {}; } catch (e) { return err(`yaml: ${(e as Error).message.split("\n")[0]}`); }
   if (!doc.services) return err(`services must be a mapping`);
   const project = dir.split("/").pop()!;
-  if (sub === "down") { const names = Object.entries(doc.services).map(([k, s]) => s.container_name ?? `${project}-${k}-1`); c.h.docker.containers = c.h.docker.containers.filter((x) => !names.includes(x.name)); return ok(names.map((n) => ` ✔ Container ${n}  Removed`).join("\n")); }
-  if (sub === "ps") return CMDS.docker!(c, ["ps"]).next().value as never;
+  const network = project + "_default";
+  if (sub === "down") { const names = Object.entries(doc.services).map(([k, s]) => s.container_name ?? `${project}-${k}-1`); c.h.docker.containers = c.h.docker.containers.filter((x) => !names.includes(x.name)); delete c.h.docker.networks[network]; return ok(names.map((n) => ` ✔ Container ${n}  Removed`).join("\n")); }
+  if (sub === "ps") return CMDS["docker"]!(c, ["ps"]).next().value as never;
   if (sub !== "up") return err(`unknown docker compose command: ${sub}`);
   const out: string[] = [];
+  c.h.docker.networks[network] ??= { driver: "bridge" };
   for (const [k, s] of Object.entries(doc.services)) {
     let imgRef = s.image;
     if (s.build) { const ctxd = norm(dir + "/" + (typeof s.build === "string" ? s.build : s.build.context)); imgRef = imgRef ?? `${project}-${k}`; const r = yield* build(c, imgRef, ctxd, ctxd + "/Dockerfile"); if (r.code) return r; }
@@ -124,18 +145,18 @@ function* compose(c: Ctx, a: string[]): G {
     const name = s.container_name ?? `${project}-${k}-1`;
     c.h.docker.containers = c.h.docker.containers.filter((x) => x.name !== name);
     const env = Array.isArray(s.environment) ? Object.fromEntries(s.environment.map((e) => e.split("="))) : s.environment ?? {};
-    const ct = makeContainer(c, img, { name, ports: (s.ports ?? []).map((p) => { const [h2, c2] = String(p).split(":"); return { h: +h2!, c: +(c2 ?? h2)! }; }), network: "bridge", env, ...(s.command ? { cmd: s.command } : {}), vols: (s.volumes ?? []).map((v) => { const [hp, cp] = v.split(":"); return [norm(hp!.startsWith("/") ? hp! : dir + "/" + hp), cp!] as [string, string]; }), interactive: false });
+    const ct = makeContainer(c, img, { name, ports: (s.ports ?? []).map((p) => { const [h2, c2] = String(p).split(":"); return { h: +h2!, c: +(c2 ?? h2)! }; }), network, env, ...(s.command ? { cmd: s.command } : {}), vols: (s.volumes ?? []).map((v) => { const [hp, cp] = v.split(":"); return [norm(hp!.startsWith("/") ? hp! : dir + "/" + hp), cp!] as [string, string]; }), interactive: false });
     if (typeof ct === "string") return err(ct);
     out.push(` ✔ Container ${name}  ${ct.running ? "Started" : "Exited"}`);
   }
   return ok(`[+] Running ${out.length}/${out.length}\n${out.join("\n")}`);
 }
-CMDS["docker-compose"] = function* (c, a) { return yield* CMDS.docker!(c, ["compose", ...a]); };
-CMDS.docker = function* (c, a) {
+CMDS["docker-compose"] = function* (c, a) { return yield* CMDS["docker"]!(c, ["compose", ...a]); };
+CMDS["docker"] = function* (c, a) {
   const h = c.h; const d = h.docker; const [sub, ...rest] = a;
   if (!sub || sub === "--version") return ok("Docker version 27.3.1, build ce12230");
-  if (!h.svcs.docker?.active) return err("Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?");
-  if (!c.root && !h.groups.docker?.members.includes(c.user)) return err(`permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock: Get "http://%2Fvar%2Frun%2Fdocker.sock/v1.47/${sub}": dial unix /var/run/docker.sock: connect: permission denied`);
+  if (!h.svcs["docker"]?.active) return err("Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?");
+  if (!c.root && !h.groups["docker"]?.members.includes(c.user)) return err(`permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock: Get "http://%2Fvar%2Frun%2Fdocker.sock/v1.47/${sub}": dial unix /var/run/docker.sock: connect: permission denied`);
   const pos = rest.filter((x) => !x.startsWith("-"));
   switch (sub) {
     case "version": case "info": return ok("Client: Docker Engine - Community\n Version:           27.3.1\nServer: Docker Engine - Community\n Engine:\n  Version:          27.3.1\n  OS/Arch:          linux/amd64");
@@ -153,14 +174,14 @@ CMDS.docker = function* (c, a) {
       if (o.rm && !ct.running) d.containers.splice(d.containers.indexOf(ct), 1);
       const pre = had ? "" : `Unable to find image '${ref(image)}' locally\n${ref(image).split(":")[1]}: Pulling from library/${image.split(":")[0]}\nStatus: Downloaded newer image for ${ref(image)}\n`;
       if (!o.detach && o.interactive && ct.running) { c.sh.stack.push({ host: ct.host, user: "root", cwd: "/", env: {}, container: ct }); return ok(pre.trimEnd()); }
-      if (!o.detach) { const out = (ct.host.journal.main ?? []).join("\n") || (/^echo\s/.test(ct.cmd) ? ct.cmd.slice(5).replace(/['"]/g, "") : ""); return ok(pre + out); }
+      if (!o.detach) { const out = (ct.host.journal["main"] ?? []).join("\n") || (/^echo\s/.test(ct.cmd) ? ct.cmd.slice(5).replace(/['"]/g, "") : ""); return ok(pre + out); }
       return ok(pre + ct.id);
     }
     case "ps": { const all = rest.includes("-a") || rest.includes("--all"); const rows = d.containers.filter((x) => all || x.running).map((x) => [x.id.slice(0, 12), x.image.replace(/:latest$/, ""), `"${x.cmd.slice(0, 18)}…"`, "2 minutes ago", x.running ? "Up 2 minutes" : "Exited (1) 1 minute ago", x.ports.map((p) => `0.0.0.0:${p.h}->${p.c}/tcp`).join(", "), x.name]); return ok(table([["CONTAINER ID", "IMAGE", "COMMAND", "CREATED", "STATUS", "PORTS", "NAMES"], ...rows])); }
     case "stop": case "kill": { for (const x of pos) { const ct = findC(h, x); if (!ct) return err(`Error response from daemon: No such container: ${x}`); ct.running = false; } return ok(pos.join("\n")); }
-    case "start": case "restart": { for (const x of pos) { const ct = findC(h, x); if (!ct) return err(`Error response from daemon: No such container: ${x}`); for (const s of Object.keys(ct.host.svcs)) ct.host.svcs[s]!.active = false; const img = d.images[ct.image] ?? ({ workdir: "/" } as Image); boot(c, ct, img, true); if (!ct.running) return err(`Error response from daemon: container ${x} exited: ${(ct.host.journal.main ?? []).slice(-1)[0] ?? ""}`); } return ok(pos.join("\n")); }
+    case "start": case "restart": { for (const x of pos) { const ct = findC(h, x); if (!ct) return err(`Error response from daemon: No such container: ${x}`); for (const s of Object.keys(ct.host.svcs)) ct.host.svcs[s]!.active = false; const img = d.images[ct.image] ?? ({ workdir: "/" } as Image); boot(c, ct, img, true); if (!ct.running) return err(`Error response from daemon: container ${x} exited: ${(ct.host.journal["main"] ?? []).slice(-1)[0] ?? ""}`); } return ok(pos.join("\n")); }
     case "rm": { for (const x of pos) { const ct = findC(h, x); if (!ct) return err(`Error response from daemon: No such container: ${x}`); if (ct.running && !rest.includes("-f")) return err(`Error response from daemon: cannot remove container "/${ct.name}": container is running: stop the container before removing or force remove`); d.containers.splice(d.containers.indexOf(ct), 1); } return ok(pos.join("\n")); }
-    case "logs": { const ct = findC(h, pos[0] ?? ""); if (!ct) return err(`Error response from daemon: No such container: ${pos[0]}`); return ok((ct.host.journal.main ?? []).join("\n") || (ct.host.svcs.nginx?.active ? '/docker-entrypoint.sh: Configuration complete; ready for start up' : "")); }
+    case "logs": { const ct = findC(h, pos[0] ?? ""); if (!ct) return err(`Error response from daemon: No such container: ${pos[0]}`); return ok((ct.host.journal["main"] ?? []).join("\n") || (ct.host.svcs["nginx"]?.active ? '/docker-entrypoint.sh: Configuration complete; ready for start up' : "")); }
     case "inspect": { const x = pos[0] ?? ""; const ct = findC(h, x); if (ct) return ok(JSON.stringify([{ Id: ct.id, Name: "/" + ct.name, State: { Status: ct.running ? "running" : "exited", Running: ct.running }, Config: { Image: ct.image, Env: Object.entries(ct.env).map(([k, v]) => `${k}=${v}`), Cmd: ct.cmd.split(" ") }, NetworkSettings: { Networks: { [ct.network]: { IPAddress: ct.host.ip } }, Ports: Object.fromEntries(ct.ports.map((p) => [`${p.c}/tcp`, [{ HostIp: "0.0.0.0", HostPort: String(p.h) }]])) } }], null, 2)); const nw = d.networks[x]; if (nw) return ok(JSON.stringify([{ Name: x, Driver: nw.driver, IPAM: { Config: [{ Subnet: nw.subnet, IPRange: nw.ipRange, Gateway: nw.gateway }] }, Containers: Object.fromEntries(d.containers.filter((q) => q.network === x).map((q) => [q.id, { Name: q.name }])) }], null, 2)); const im = d.images[ref(x)]; if (im) return ok(JSON.stringify([{ Id: "sha256:" + im.id, RepoTags: [im.ref], Config: { Cmd: im.cmd.split(" "), ExposedPorts: Object.fromEntries(im.expose.map((p) => [`${p}/tcp`, {}])), WorkingDir: im.workdir } }], null, 2)); return err(`Error: No such object: ${x}`); }
     case "cp": {
       const [s, t] = pos; if (!s || !t) return err('"docker cp" requires exactly 2 arguments.');
@@ -191,7 +212,7 @@ CMDS.docker = function* (c, a) {
       if (act === "create") { const nm = p2[0]; if (!nm) return err('"docker network create" requires exactly 1 argument.'); if (d.networks[nm]) return err(`Error response from daemon: network with name ${nm} already exists`); const drv = opt(r2, "-d", "--driver") ?? "bridge"; if (!["bridge", "macvlan", "overlay", "ipvlan", "host"].includes(drv)) return err(`Error response from daemon: plugin "${drv}" not found`); const sub2 = opt(r2, "--subnet"); const ipr = opt(r2, "--ip-range"); const gw = opt(r2, "--gateway"); d.networks[nm] = { driver: drv, ...(sub2 ? { subnet: sub2 } : {}), ...(ipr ? { ipRange: ipr } : {}), ...(gw ? { gateway: gw } : {}) }; return ok(rid()); }
       if (act === "rm") { delete d.networks[p2[0] ?? ""]; return ok(p2[0]); }
       if (act === "connect") { const ct = findC(h, p2[1] ?? ""); if (!ct || !d.networks[p2[0] ?? ""]) return err("Error response from daemon: No such container or network"); ct.network = p2[0]!; return ok(); }
-      if (act === "inspect") return yield* CMDS.docker!(c, ["inspect", p2[0] ?? ""]);
+      if (act === "inspect") return yield* CMDS["docker"]!(c, ["inspect", p2[0] ?? ""]);
       return err(`docker network: '${act}' is not a docker command.`);
     }
     default: return err(`docker: '${sub}' is not a docker command.\nSee 'docker --help'`);

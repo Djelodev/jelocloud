@@ -7,38 +7,50 @@ import { CREDS, PKGS, PKG_ALIASES, addUser, base, children, copyTree, installPkg
 const needRoot = (c: Ctx, what: string) => (c.root ? null : err(`${what}: Permission denied.`));
 const P = (c: Ctx, p: string) => abs({ cwd: c.f.cwd, host: c.h, user: c.user }, p);
 
-CMDS.help = () => done(ok(`Terminal Jelo Cloud — commandes Linux réelles simulées.
+CMDS["help"] = () => done(ok(`Terminal Jelo Cloud — commandes Linux réelles simulées.
 Fichiers : ls cd pwd cat echo printf touch mkdir rm cp mv chmod chown grep head tail wc sed vi/vim/nano
 Système  : whoami id hostname sudo su ssh scp exit useradd usermod userdel passwd chage getent
 Paquets  : yum dnf rpm apt pip3   Services : systemctl service journalctl ss ps kill
 Sécurité : iptables sestatus setenforce ssh-keygen ssh-copy-id   Web : curl nginx httpd
 DevOps   : git docker kubectl ansible ansible-playbook terraform tea jenkins-cli mysql psql
-Astuce : tape "indice" pour l'aide de l'étape, ↑/↓ pour l'historique, Tab pour compléter.`));
-CMDS.clear = () => done(ok("\x1bc"));
-CMDS.echo = (c, a) => { const n = a[0] === "-n"; const e = a[0] === "-e"; const t = a.slice(n || e ? 1 : 0).join(" "); return done(ok(e ? t.replace(/\\n/g, "\n").replace(/\\t/g, "\t") : t)); };
-CMDS.printf = (c, a) => done(ok((a[0] ?? "").replace(/\\n/g, "\n").replace(/%s/g, () => a.splice(1, 1)[0] ?? "").replace(/\n$/, "")));
-CMDS.whoami = (c) => done(ok(c.user));
-CMDS.hostname = (c, a) => done(ok(a.includes("-I") ? c.h.ip : c.f.container ? c.f.container.id.slice(0, 12) : c.h.name));
-CMDS.pwd = (c) => done(ok(c.f.cwd));
-CMDS.date = () => done(ok(new Date().toUTCString()));
-CMDS.uname = (c, a) => done(ok(a.includes("-a") ? `Linux ${c.h.name} 5.14.0-362.el9.x86_64 #1 SMP x86_64 GNU/Linux` : "Linux"));
-CMDS.env = (c) => done(ok(Object.entries(c.sh.envFor(c.f)).map(([k, v]) => `${k}=${v}`).join("\n")));
-CMDS.export = (c, a) => { for (const x of a) { const [k, ...v] = x.split("="); if (k) c.f.env[k] = v.join("="); } return done(ok()); };
-CMDS.history = (c) => done(ok(c.sh.history.map((h, i) => `${String(i + 1).padStart(5)}  ${h}`).join("\n")));
-CMDS.id = (c, a) => {
+↑/↓ pour l’historique, Tab pour compléter.`));
+CMDS["clear"] = () => done(ok("\x1bc"));
+CMDS["echo"] = (c, a) => { const n = a[0] === "-n"; const e = a[0] === "-e"; const t = a.slice(n || e ? 1 : 0).join(" "); return done(ok(e ? t.replace(/\\n/g, "\n").replace(/\\t/g, "\t") : t)); };
+CMDS["printf"] = (c, a) => done(ok((a[0] ?? "").replace(/\\n/g, "\n").replace(/%s/g, () => a.splice(1, 1)[0] ?? "").replace(/\n$/, "")));
+CMDS["whoami"] = (c) => done(ok(c.user));
+CMDS["hostname"] = (c, a) => done(ok(a.includes("-I") ? c.h.ip : c.f.container ? c.f.container.id.slice(0, 12) : c.h.name));
+CMDS["pwd"] = (c) => done(ok(c.f.cwd));
+CMDS["date"] = () => done(ok(new Date().toUTCString()));
+CMDS["uname"] = (c, a) => done(ok(a.includes("-a") ? `Linux ${c.h.name} 5.14.0-362.el9.x86_64 #1 SMP x86_64 GNU/Linux` : "Linux"));
+CMDS["env"] = (c) => done(ok(Object.entries(c.sh.envFor(c.f)).map(([k, v]) => `${k}=${v}`).join("\n")));
+CMDS["export"] = (c, a) => { for (const x of a) { const [k, ...v] = x.split("="); if (k) c.f.env[k] = v.join("="); } return done(ok()); };
+CMDS["history"] = (c) => done(ok(c.sh.history.map((h, i) => `${String(i + 1).padStart(5)}  ${h}`).join("\n")));
+CMDS["id"] = (c, a) => {
   const n = a[0] ?? c.user; const u = c.h.users[n]; if (!u) return done(err(`id: '${n}': no such user`));
   const gs = Object.entries(c.h.groups).filter(([g, v]) => v.members.includes(n) || g === n);
   return done(ok(`uid=${u.uid}(${n}) gid=${u.gid}(${n}) groups=${gs.map(([g, v]) => `${v.gid}(${g})`).join(",")}`));
 };
-CMDS.which = (c, a) => done(a[0] && CMDS[a[0]] ? ok(`/usr/bin/${a[0]}`) : err(`which: no ${a[0]} in (/usr/local/bin:/usr/bin)`));
-CMDS.cd = (c, a) => {
+CMDS["test"] = (c, a) => {
+  const [first, operator, last] = a;
+  if (a.length === 1) return done(first ? ok() : err(""));
+  if ((first === "-f" || first === "-d" || first === "-e") && operator) {
+    const node = c.h.fs[P(c, operator)];
+    return done(node && (first === "-e" || node.type === first.slice(1)) ? ok() : err(""));
+  }
+  if (operator === "=" || operator === "==" || operator === "!=") {
+    return done((first === last) === (operator !== "!=") ? ok() : err(""));
+  }
+  return done(err("test: invalid expression", 2));
+};
+CMDS["which"] = (c, a) => done(a[0] && CMDS[a[0]] ? ok(`/usr/bin/${a[0]}`) : err(`which: no ${a[0]} in (/usr/local/bin:/usr/bin)`));
+CMDS["cd"] = (c, a) => {
   const p = a[0] ? (a[0] === "-" ? c.f.cwd : P(c, a[0])) : c.h.users[c.user]?.home ?? "/";
   if (!c.h.fs[p]) return done(err(`bash: cd: ${a[0]}: No such file or directory`));
   if (!isDir(c.h, p)) return done(err(`bash: cd: ${a[0]}: Not a directory`));
   c.f.cwd = p; return done(ok());
 };
 const modeStr = (m: number, d: boolean) => (d ? "d" : "-") + [6, 3, 0].map((s) => ((m >> s) & 4 ? "r" : "-") + ((m >> s) & 2 ? "w" : "-") + ((m >> s) & 1 ? "x" : "-")).join("") + (m & 0o1000 ? "" : "");
-CMDS.ls = (c, a) => {
+CMDS["ls"] = (c, a) => {
   const { f, pos } = flags(a); const targets = pos.length ? pos : ["."]; const out: string[] = [];
   for (const t of targets) {
     const p = P(c, t); const n = c.h.fs[p];
@@ -55,7 +67,7 @@ CMDS.ls = (c, a) => {
   }
   return done(ok(out.join("\n")));
 };
-CMDS.cat = (c, a) => {
+CMDS["cat"] = (c, a) => {
   if (!a.length || a[0] === "-") return done(ok(c.stdin));
   const out: string[] = [];
   for (const x of a.filter((x) => !x.startsWith("-"))) {
@@ -67,9 +79,9 @@ CMDS.cat = (c, a) => {
   }
   return done(ok(out.join("\n")));
 };
-CMDS.touch = (c, a) => { for (const x of a) { const p = P(c, x); if (!isDir(c.h, parent(p))) return done(err(`touch: cannot touch '${x}': No such file or directory`)); if (!canWrite(c, p)) return done(err(`touch: cannot touch '${x}': Permission denied`)); if (!c.h.fs[p]) writeFile(c.h, p, "", c.user); } return done(ok()); };
-CMDS.mkdir = (c, a) => { const { f, pos } = flags(a); for (const x of pos) { const p = P(c, x); if (c.h.fs[p] && !f.has("-p")) return done(err(`mkdir: cannot create directory '${x}': File exists`)); if (!f.has("-p") && !isDir(c.h, parent(p))) return done(err(`mkdir: cannot create directory '${x}': No such file or directory`)); if (!canWrite(c, p)) return done(err(`mkdir: cannot create directory '${x}': Permission denied`)); mkdirp(c.h, p, c.user); } return done(ok()); };
-CMDS.rm = (c, a) => { const { f, pos } = flags(a); for (const x of pos) { const p = P(c, x); const n = c.h.fs[p]; if (!n) { if (f.has("-f")) continue; return done(err(`rm: cannot remove '${x}': No such file or directory`)); } if (n.type === "d" && !f.has("-r") && !f.has("-R")) return done(err(`rm: cannot remove '${x}': Is a directory`)); if (!canWrite(c, parent(p))) return done(err(`rm: cannot remove '${x}': Permission denied`)); rmrf(c.h, p); } return done(ok()); };
+CMDS["touch"] = (c, a) => { for (const x of a) { const p = P(c, x); if (!isDir(c.h, parent(p))) return done(err(`touch: cannot touch '${x}': No such file or directory`)); if (!canWrite(c, p)) return done(err(`touch: cannot touch '${x}': Permission denied`)); if (!c.h.fs[p]) writeFile(c.h, p, "", c.user); } return done(ok()); };
+CMDS["mkdir"] = (c, a) => { const { f, pos } = flags(a); for (const x of pos) { const p = P(c, x); if (c.h.fs[p] && !f.has("-p")) return done(err(`mkdir: cannot create directory '${x}': File exists`)); if (!f.has("-p") && !isDir(c.h, parent(p))) return done(err(`mkdir: cannot create directory '${x}': No such file or directory`)); if (!canWrite(c, p)) return done(err(`mkdir: cannot create directory '${x}': Permission denied`)); mkdirp(c.h, p, c.user); } return done(ok()); };
+CMDS["rm"] = (c, a) => { const { f, pos } = flags(a); for (const x of pos) { const p = P(c, x); const n = c.h.fs[p]; if (!n) { if (f.has("-f")) continue; return done(err(`rm: cannot remove '${x}': No such file or directory`)); } if (n.type === "d" && !f.has("-r") && !f.has("-R")) return done(err(`rm: cannot remove '${x}': Is a directory`)); if (!canWrite(c, parent(p))) return done(err(`rm: cannot remove '${x}': Permission denied`)); rmrf(c.h, p); } return done(ok()); };
 function cpmv(c: Ctx, a: string[], mv: boolean) {
   const { f, pos } = flags(a); const nm = mv ? "mv" : "cp"; if (pos.length < 2) return err(`${nm}: missing file operand`);
   const dst = P(c, pos[pos.length - 1]!); const srcs = pos.slice(0, -1);
@@ -85,8 +97,8 @@ function cpmv(c: Ctx, a: string[], mv: boolean) {
   }
   return ok();
 }
-CMDS.cp = (c, a) => done(cpmv(c, a, false));
-CMDS.mv = (c, a) => done(cpmv(c, a, true));
+CMDS["cp"] = (c, a) => done(cpmv(c, a, false));
+CMDS["mv"] = (c, a) => done(cpmv(c, a, true));
 function applyMode(cur: number, spec: string): number | null {
   if (/^[0-7]{3,4}$/.test(spec)) return parseInt(spec, 8);
   let m = cur;
@@ -98,7 +110,7 @@ function applyMode(cur: number, spec: string): number | null {
   }
   return m;
 }
-CMDS.chmod = (c, a) => {
+CMDS["chmod"] = (c, a) => {
   const { f, pos } = flags(a.filter((x) => !/^[+-][rwx]+$/.test(x) || false)); const spec = a.find((x) => !x.startsWith("-") || /^-[rwx]+$/.test(x))!; const files = pos.filter((x) => x !== spec);
   if (!spec || !files.length) return done(err("chmod: missing operand"));
   for (const x of files) {
@@ -109,7 +121,7 @@ CMDS.chmod = (c, a) => {
   }
   return done(ok());
 };
-CMDS.chown = (c, a) => {
+CMDS["chown"] = (c, a) => {
   const { f, pos } = flags(a); const [spec, ...files] = pos; if (!spec || !files.length) return done(err("chown: missing operand"));
   const [u, g] = spec.split(/[:.]/); if (u && !c.h.users[u]) return done(err(`chown: invalid user: '${spec}'`));
   if (!c.root) return done(err(`chown: changing ownership of '${files[0]}': Operation not permitted`));
@@ -121,7 +133,7 @@ function input(c: Ctx, files: string[]): { text: string } | { e: string } {
   let t = ""; for (const x of files) { const p = P(c, x); if (!canRead(c, p)) return { e: `${x}: Permission denied` }; const v = vread(c, p); if (v === undefined) return { e: `${x}: No such file or directory` }; t += v; }
   return { text: t };
 }
-CMDS.grep = (c, a) => {
+CMDS["grep"] = (c, a) => {
   const { f, pos } = flags(a.filter((x) => x !== "-E")); const [pat, ...files] = pos; if (pat === undefined) return done(err("Usage: grep [OPTION]... PATTERNS [FILE]..."));
   const inp = input(c, files); if ("e" in inp) return done(err(`grep: ${inp.e}`, 2));
   let re: RegExp; try { re = new RegExp(pat, f.has("-i") ? "i" : ""); } catch { re = new RegExp(pat.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")); }
@@ -130,11 +142,11 @@ CMDS.grep = (c, a) => {
   return done(lines.length ? ok(lines.map(({ l, i }) => (f.has("-n") ? `${i + 1}:` : "") + l).join("\n")) : err("", 1));
 };
 const headTail = (tail: boolean) => (c: Ctx, a: string[]) => { const n = Number(opt(a, "-n") ?? (a.find((x) => /^-\d+$/.test(x))?.slice(1)) ?? 10); const files = a.filter((x, i) => !x.startsWith("-") && a[i - 1] !== "-n"); const inp = input(c, files); if ("e" in inp) return done(err(`${tail ? "tail" : "head"}: ${inp.e}`)); const l = inp.text.replace(/\n$/, "").split("\n"); return done(ok((tail ? l.slice(-n) : l.slice(0, n)).join("\n"))); };
-CMDS.head = headTail(false); CMDS.tail = headTail(true);
-CMDS.wc = (c, a) => { const { f, pos } = flags(a); const inp = input(c, pos); if ("e" in inp) return done(err(`wc: ${inp.e}`)); const l = inp.text ? inp.text.replace(/\n$/, "").split("\n").length : 0; return done(ok(f.has("-l") ? String(l) : `${l} ${inp.text.split(/\s+/).filter(Boolean).length} ${inp.text.length}`)); };
-CMDS.sort = (c, a) => { const inp = input(c, a.filter((x) => !x.startsWith("-"))); return done("e" in inp ? err(inp.e) : ok(inp.text.split("\n").filter(Boolean).sort().join("\n"))); };
-CMDS.awk = (c, a) => { const F = opt(a, "-F") ?? (a.find((x) => x.startsWith("-F"))?.slice(2)); const prog = a.find((x) => x.includes("print")) ?? ""; const files = a.filter((x) => !x.startsWith("-F") && x !== prog && x !== F); const inp = input(c, files); if ("e" in inp) return done(err(inp.e)); const idx = [...prog.matchAll(/\$(\d+)/g)].map((m) => +m[1]!); return done(ok(inp.text.split("\n").filter(Boolean).map((l) => { const p = F ? l.split(F) : l.trim().split(/\s+/); return idx.map((i) => (i === 0 ? l : p[i - 1] ?? "")).join(" "); }).join("\n"))); };
-CMDS.sed = (c, a) => {
+CMDS["head"] = headTail(false); CMDS["tail"] = headTail(true);
+CMDS["wc"] = (c, a) => { const { f, pos } = flags(a); const inp = input(c, pos); if ("e" in inp) return done(err(`wc: ${inp.e}`)); const l = inp.text ? inp.text.replace(/\n$/, "").split("\n").length : 0; return done(ok(f.has("-l") ? String(l) : `${l} ${inp.text.split(/\s+/).filter(Boolean).length} ${inp.text.length}`)); };
+CMDS["sort"] = (c, a) => { const inp = input(c, a.filter((x) => !x.startsWith("-"))); return done("e" in inp ? err(inp.e) : ok(inp.text.split("\n").filter(Boolean).sort().join("\n"))); };
+CMDS["awk"] = (c, a) => { const F = opt(a, "-F") ?? (a.find((x) => x.startsWith("-F"))?.slice(2)); const prog = a.find((x) => x.includes("print")) ?? ""; const files = a.filter((x) => !x.startsWith("-F") && x !== prog && x !== F); const inp = input(c, files); if ("e" in inp) return done(err(inp.e)); const idx = [...prog.matchAll(/\$(\d+)/g)].map((m) => +m[1]!); return done(ok(inp.text.split("\n").filter(Boolean).map((l) => { const p = F ? l.split(F) : l.trim().split(/\s+/); return idx.map((i) => (i === 0 ? l : p[i - 1] ?? "")).join(" "); }).join("\n"))); };
+CMDS["sed"] = (c, a) => {
   const inplace = a.includes("-i"); const rest = a.filter((x) => x !== "-i" && x !== "-e");
   const [script, ...files] = rest; if (!script) return done(err("Usage: sed [OPTION]... {script} [input-file]..."));
   const apply = (text: string): string | null => {
@@ -173,16 +185,16 @@ function* editor(c: Ctx, a: string[]): G {
   writeFile(c.h, p, res, c.user);
   return ok(`"${file}" ${res.split("\n").length}L, ${res.length}B written`);
 }
-CMDS.vi = editor; CMDS.vim = editor; CMDS.nano = editor;
-CMDS.bash = (c, a) => (a[0] === "-c" ? c.sh.run(a[1] ?? "", c.f, c.root ? "root" : undefined) : a[0] ? runScript(c, P(c, a.find((x) => !x.startsWith("-"))!), a.slice(1), false) : done(ok()));
-CMDS.sh = CMDS.bash;
-CMDS.base64 = (c, a) => done(ok(a.includes("-d") || a.includes("--decode") ? atob(c.stdin.trim()) : btoa(c.stdin.trim())));
-CMDS.ping = (c, a) => { const t = a.find((x) => !x.startsWith("-") && !/^\d+$/.test(x)); const h = t && resolveHost(c.w, t, c.h); return done(h ? ok(`PING ${t} (${h.ip}) 56(84) bytes of data.\n64 bytes from ${h.ip}: icmp_seq=1 ttl=64 time=0.08 ms\n--- ${t} ping statistics ---\n1 packets transmitted, 1 received, 0% packet loss`) : err(`ping: ${t}: Name or service not known`, 2)); };
-CMDS.ip = (c) => done(ok(`1: lo: <LOOPBACK,UP> inet 127.0.0.1/8\n2: eth0: <BROADCAST,MULTICAST,UP> inet ${c.h.ip}/24`));
-CMDS.zip = (c, a) => { const { pos } = flags(a); const [z, ...src] = pos; if (!z || !src.length) return done(err("zip error: Nothing to do!", 12)); const zp = P(c, z.endsWith(".zip") ? z : z + ".zip"); for (const s of src) if (!c.h.fs[P(c, s)]) return done(err(`\tzip warning: name not matched: ${s}\nzip error: Nothing to do! (${z})`, 12)); if (!canWrite(c, zp)) return done(err(`zip I/O error: Permission denied\nzip error: Could not create output file (${z})`, 15)); writeFile(c.h, zp, "PK-ZIP:" + src.map((s) => P(c, s)).join(","), c.user); return done(ok(src.map((s) => `  adding: ${s.replace(/^\//, "")}/ (stored 0%)`).join("\n"))); };
+CMDS["vi"] = editor; CMDS["vim"] = editor; CMDS["nano"] = editor;
+CMDS["bash"] = (c, a) => (a[0] === "-c" ? c.sh.run(a[1] ?? "", c.f, c.root ? "root" : undefined) : a[0] ? runScript(c, P(c, a.find((x) => !x.startsWith("-"))!), a.slice(1), false) : done(ok()));
+CMDS["sh"] = CMDS["bash"];
+CMDS["base64"] = (c, a) => done(ok(a.includes("-d") || a.includes("--decode") ? atob(c.stdin.trim()) : btoa(c.stdin.trim())));
+CMDS["ping"] = (c, a) => { const t = a.find((x) => !x.startsWith("-") && !/^\d+$/.test(x)); const h = t && resolveHost(c.w, t, c.h); return done(h ? ok(`PING ${t} (${h.ip}) 56(84) bytes of data.\n64 bytes from ${h.ip}: icmp_seq=1 ttl=64 time=0.08 ms\n--- ${t} ping statistics ---\n1 packets transmitted, 1 received, 0% packet loss`) : err(`ping: ${t}: Name or service not known`, 2)); };
+CMDS["ip"] = (c) => done(ok(`1: lo: <LOOPBACK,UP> inet 127.0.0.1/8\n2: eth0: <BROADCAST,MULTICAST,UP> inet ${c.h.ip}/24`));
+CMDS["zip"] = (c, a) => { const { pos } = flags(a); const [z, ...src] = pos; if (!z || !src.length) return done(err("zip error: Nothing to do!", 12)); const zp = P(c, z.endsWith(".zip") ? z : z + ".zip"); for (const s of src) if (!c.h.fs[P(c, s)]) return done(err(`\tzip warning: name not matched: ${s}\nzip error: Nothing to do! (${z})`, 12)); if (!canWrite(c, zp)) return done(err(`zip I/O error: Permission denied\nzip error: Could not create output file (${z})`, 15)); writeFile(c.h, zp, "PK-ZIP:" + src.map((s) => P(c, s)).join(","), c.user); return done(ok(src.map((s) => `  adding: ${s.replace(/^\//, "")}/ (stored 0%)`).join("\n"))); };
 
 // ---------- Utilisateurs ----------
-CMDS.useradd = (c, a) => {
+CMDS["useradd"] = (c, a) => {
   const no = needRoot(c, "useradd"); if (no) return done(err("useradd: Permission denied.\nuseradd: cannot lock /etc/passwd; try again later.", 1));
   const name = a.filter((x, i) => !x.startsWith("-") && !(a[i - 1] ?? "").match(/^-[sedugGc]$|^--(shell|expiredate|home-dir|uid|gid|groups|comment)$/)).pop();
   if (!name) return done(err("Usage: useradd [options] LOGIN"));
@@ -196,46 +208,51 @@ CMDS.useradd = (c, a) => {
   if (!a.includes("-M")) mkdirp(c.h, u.home, name);
   return done(ok());
 };
-CMDS.adduser = CMDS.useradd;
-CMDS.userdel = (c, a) => { if (!c.root) return done(err("userdel: Permission denied.")); const n = a.filter((x) => !x.startsWith("-"))[0]!; if (!c.h.users[n]) return done(err(`userdel: user '${n}' does not exist`, 6)); if (a.includes("-r")) rmrf(c.h, c.h.users[n]!.home); delete c.h.users[n]; return done(ok()); };
-CMDS.usermod = (c, a) => {
+CMDS["adduser"] = CMDS["useradd"];
+CMDS["userdel"] = (c, a) => { if (!c.root) return done(err("userdel: Permission denied.")); const n = a.filter((x) => !x.startsWith("-"))[0]!; if (!c.h.users[n]) return done(err(`userdel: user '${n}' does not exist`, 6)); if (a.includes("-r")) rmrf(c.h, c.h.users[n]!.home); delete c.h.users[n]; return done(ok()); };
+CMDS["usermod"] = (c, a) => {
   if (!c.root) return done(err("usermod: Permission denied."));
   const n = a[a.length - 1]!; const u = c.h.users[n]; if (!u) return done(err(`usermod: user '${n}' does not exist`, 6));
-  const s = opt(a, "-s"); if (s) u.shell = s; const e = opt(a, "-e"); if (e !== undefined) u.expire = e || undefined;
+  const s = opt(a, "-s"); if (s) u.shell = s; const e = opt(a, "-e"); if (e) u.expire = e; else if (e === "") delete u.expire;
   const g = opt(a, "-G", "-aG"); if (g) for (const x of g.split(",")) { if (!c.h.groups[x]) return done(err(`usermod: group '${x}' does not exist`, 6)); if (!c.h.groups[x]!.members.includes(n)) c.h.groups[x]!.members.push(n); }
   return done(ok());
 };
-CMDS.groupadd = (c, a) => { if (!c.root) return done(err("groupadd: Permission denied.")); const n = a.filter((x) => !x.startsWith("-"))[0]!; if (c.h.groups[n]) return done(err(`groupadd: group '${n}' already exists`, 9)); c.h.groups[n] = { gid: 1500 + Object.keys(c.h.groups).length, members: [] }; return done(ok()); };
-CMDS.passwd = function* (c, a) {
+CMDS["groupadd"] = (c, a) => { if (!c.root) return done(err("groupadd: Permission denied.")); const n = a.filter((x) => !x.startsWith("-"))[0]!; if (c.h.groups[n]) return done(err(`groupadd: group '${n}' already exists`, 9)); c.h.groups[n] = { gid: 1500 + Object.keys(c.h.groups).length, members: [] }; return done(ok()); };
+CMDS["passwd"] = function* (c, a) {
   const n = a.filter((x) => !x.startsWith("-"))[0] ?? c.user; const u = c.h.users[n]; if (!u) return err(`passwd: Unknown user name '${n}'.`);
   if (n !== c.user && !c.root) return err("passwd: Only root can specify a user name.");
   if (a.includes("--stdin")) { u.password = c.stdin.trim(); return ok(`Changing password for user ${n}.\npasswd: all authentication tokens updated successfully.`); }
   const p1 = yield { kind: "password", prompt: "New password: " }; const p2 = yield { kind: "password", prompt: "Retype new password: " };
   if (p1 !== p2) return err("Sorry, passwords do not match.\npasswd: Authentication token manipulation error");
-  u.password = p1 ?? ""; return ok("passwd: all authentication tokens updated successfully.");
+  if (p1 === null) return err("passwd: cancelled");
+  u.password = p1; return ok("passwd: all authentication tokens updated successfully.");
 };
-CMDS.chage = (c, a) => {
+CMDS["chage"] = (c, a) => {
   const n = a[a.length - 1]!; const u = c.h.users[n]; if (!u) return done(err(`chage: user '${n}' does not exist in /etc/passwd`));
   if (!c.root && !(a.includes("-l") && n === c.user)) return done(err("chage: Permission denied."));
-  const e = opt(a, "-E"); if (e) { u.expire = e === "-1" ? undefined : e; return done(ok()); }
+  const e = opt(a, "-E"); if (e) { if (e === "-1") delete u.expire; else u.expire = e; return done(ok()); }
   const exp = u.expire ? new Date(u.expire + "T00:00:00Z").toLocaleDateString("en-US", { month: "short", day: "2-digit", year: "numeric", timeZone: "UTC" }) : "never";
   return done(ok(`Last password change\t\t\t\t\t: Nov 22, 2026\nPassword expires\t\t\t\t\t: never\nPassword inactive\t\t\t\t\t: never\nAccount expires\t\t\t\t\t\t: ${exp}\nMinimum number of days between password change\t\t: 0\nMaximum number of days between password change\t\t: 99999`));
 };
-CMDS.getent = (c, a) => { const db = a[0]; const k = a[1]; const v = vread(c, db === "group" ? "/etc/group" : "/etc/passwd") ?? ""; const l = v.split("\n").filter((x) => x && (!k || x.startsWith(k + ":"))); return done(l.length ? ok(l.join("\n")) : err("", 2)); };
+CMDS["getent"] = (c, a) => { const db = a[0]; const k = a[1]; const v = vread(c, db === "group" ? "/etc/group" : "/etc/passwd") ?? ""; const l = v.split("\n").filter((x) => x && (!k || x.startsWith(k + ":"))); return done(l.length ? ok(l.join("\n")) : err("", 2)); };
 
 // ---------- sudo / su / exit ----------
 function* auth(c: Ctx, prompt: string, pass: string): Generator<import("./types").Ask, boolean, string | null> {
   for (let i = 0; i < 3; i++) { const p = yield { kind: "password", prompt }; if (p === pass) return true; if (i < 2) prompt = "Sorry, try again.\n" + prompt; }
   return false;
 }
-CMDS.sudo = function* (c, a) {
+CMDS["sudo"] = function* (c, a) {
   const u = c.h.users[c.user]!;
   if (!c.root) {
-    const allowed = c.h.groups.wheel?.members.includes(c.user) || readFile(c.h, "/etc/sudoers")?.includes(c.user);
-    if (!c.f.sudoOk) {
+    const allowed = c.h.groups["wheel"]?.members.includes(c.user) || readFile(c.h, "/etc/sudoers")?.includes(c.user);
+    const passwordless = readFile(c.h, "/etc/sudoers")?.split("\n").some((line) => {
+      const [user, , marker, ...commands] = line.trim().split(/\s+/);
+      return user === c.user && marker === "NOPASSWD:" && commands.some((cmd) => cmd === "ALL" || base(cmd) === a[0]);
+    });
+    if (!allowed) return err(`${c.user} is not in the sudoers file.  This incident will be reported.`);
+    if (!c.f.sudoOk && !passwordless) {
       const okk = yield* auth(c, `[sudo] password for ${c.user}: `, u.password);
       if (!okk) return err("sudo: 3 incorrect password attempts");
-      if (!allowed) return err(`${c.user} is not in the sudoers file.  This incident will be reported.`);
       c.f.sudoOk = true;
     }
   }
@@ -249,7 +266,7 @@ CMDS.sudo = function* (c, a) {
   if (!c.h.users[target]) return err(`sudo: unknown user ${target}`);
   return yield* c.sh.exec(args, c.f, c.stdin, target);
 };
-CMDS.su = function* (c, a) {
+CMDS["su"] = function* (c, a) {
   const n = a.filter((x) => x !== "-" && x !== "-l")[0] ?? "root"; const ci = a.indexOf("-c");
   const u = c.h.users[n]; if (!u) return err(`su: user ${n} does not exist`);
   if (!c.root) { const okk = yield* auth(c, "Password: ", u.password); if (!okk) return err("su: Authentication failure"); }
@@ -257,12 +274,12 @@ CMDS.su = function* (c, a) {
   if (ci >= 0) return yield* c.sh.run(a[ci + 1] ?? "", c.f, n);
   c.sh.stack.push({ host: c.h, user: n, cwd: u.home, env: {} }); return ok();
 };
-CMDS.exit = (c) => {
+CMDS["exit"] = (c) => {
   const st = c.sh.stack; if (st.length === 1) return done(ok("logout — tu es sur le jump host (rien à quitter)."));
   const f = st.pop()!; const msg = f.container ? "exit" : f.host !== st[st.length - 1]!.host ? `logout\nConnection to ${f.host.name} closed.` : "logout";
   return done(ok(msg));
 };
-CMDS.logout = CMDS.exit;
+CMDS["logout"] = CMDS["exit"];
 
 // ---------- SSH ----------
 const pubOf = (h: import("./world").Host, user: string) => readFile(h, `${h.users[user]?.home}/.ssh/id_rsa.pub`)?.trim();
@@ -271,17 +288,17 @@ function* sshLogin(c: Ctx, target: string): Generator<import("./types").Ask, { h
   const user = at[0]!; const hostName = at[1]!;
   const h = resolveHost(c.w, hostName, c.h);
   if (!h) return `ssh: Could not resolve hostname ${hostName}: Name or service not known`;
-  if (!h.svcs.sshd?.active) return `ssh: connect to host ${hostName} port 22: Connection refused`;
-  const conf = readFile(h, "/etc/ssh/sshd_config") ?? "";
-  const u = h.users[user];
+  if (!h.svcs["sshd"]?.active) return `ssh: connect to host ${hostName} port 22: Connection refused`;
+  const conf = h.svcs["sshd"].config ?? "";
+  const u = Object.hasOwn(h.users, user) ? h.users[user] : undefined;
   const rootDenied = user === "root" && /^\s*PermitRootLogin\s+no/m.test(conf);
   const pub = pubOf(c.h, c.user);
-  const keyOk = !!u && !!pub && (readFile(h, `${u.home}/.ssh/authorized_keys`) ?? "").includes(pub) && !rootDenied;
+  const keyOk = !/^\s*PubkeyAuthentication\s+no/m.test(conf) && !!u && !!pub && (readFile(h, `${u.home}/.ssh/authorized_keys`) ?? "").includes(pub) && !rootDenied;
   if (!keyOk) {
-    if (c.f.batch) return `${user}@${hostName}: Permission denied (publickey,gssapi-keyex,gssapi-with-mic,password).`;
+    if (c.f.batch || /^\s*PasswordAuthentication\s+no/m.test(conf)) return `${user}@${hostName}: Permission denied (publickey,gssapi-keyex,gssapi-with-mic,password).`;
     for (let i = 0; i < 3; i++) {
       const p = yield { kind: "password", prompt: `${user}@${hostName}'s password: ` };
-      if (u && !rootDenied && p === u.password) break;
+      if (u && !rootDenied && u.password !== "!" && p === u.password) break;
       if (i === 2) return `${user}@${hostName}: Permission denied (publickey,gssapi-keyex,gssapi-with-mic,password).`;
     }
   }
@@ -289,16 +306,16 @@ function* sshLogin(c: Ctx, target: string): Generator<import("./types").Ask, { h
   if (u!.shell.includes("nologin") || u!.shell.includes("false")) return "This account is currently not available.\nConnection to " + hostName + " closed.";
   return { h, user };
 }
-CMDS.ssh = function* (c, a) {
+CMDS["ssh"] = function* (c, a) {
   const pos = a.filter((x, i) => !x.startsWith("-") && !["-i", "-p", "-o"].includes(a[i - 1] ?? ""));
   const [target, ...cmd] = pos; if (!target) return err("usage: ssh [-46AaCfGgKkMNnqsTtVvXxYy] destination [command]", 255);
   const r = yield* sshLogin(c, target); if (typeof r === "string") return err(r, 255);
   const frame = { host: r.h, user: r.user, cwd: r.h.users[r.user]!.home, env: {}, via: c.h.name };
-  if (cmd.length) return yield* c.sh.run(cmd.join(" "), { ...frame, batch: c.f.batch });
+  if (cmd.length) return yield* c.sh.run(cmd.join(" "), { ...frame, batch: c.f.batch ?? false });
   c.sh.stack.push(frame);
   return ok(`Last login: Sun Nov 22 20:22:01 2026 from ${c.h.ip}`);
 };
-CMDS.scp = function* (c, a) {
+CMDS["scp"] = function* (c, a) {
   const pos = a.filter((x) => !x.startsWith("-")); const dst = pos.pop(); if (!dst || !pos.length) return err("usage: scp [-r] source ... [[user@]host1:]file2");
   for (const s of pos) {
     const remote = (x: string) => /^[^/]*:/.test(x);
@@ -357,9 +374,9 @@ function* yum(c: Ctx, a: string[]): G {
   if (sub === "update" || sub === "makecache") return ok("Dependencies resolved.\nNothing to do.\nComplete!");
   return err(`No such command: ${sub}. Please use /usr/bin/yum --help`);
 }
-CMDS.yum = yum; CMDS.dnf = yum;
+CMDS["yum"] = yum; CMDS["dnf"] = yum;
 CMDS["yum-config-manager"] = (c, a) => { if (!c.root) return done(err("This command has to be run under the root user.")); const u = opt(a, "--add-repo"); if (!u) return done(err("Usage: yum-config-manager --add-repo URL")); if (!/docker|jenkins/.test(u)) return done(err(`Curl error (6): Couldn't resolve host name for ${u}`)); writeFile(c.h, `/etc/yum.repos.d/${/jenkins/.test(u) ? "jenkins" : "docker-ce"}.repo`, `[repo]\nbaseurl=${u}\n`); return done(ok(`Adding repo from: ${u}`)); };
-CMDS.rpm = (c, a) => { const p = a.filter((x) => !x.startsWith("-"))[0]; if (a.includes("--import")) return done(ok()); return done(p && c.h.pkgs.has(p) ? ok(`${p}-1.0-1.el9.x86_64`) : err(`package ${p} is not installed`)); };
+CMDS["rpm"] = (c, a) => { const p = a.filter((x) => !x.startsWith("-"))[0]; if (a.includes("--import")) return done(ok()); return done(p && c.h.pkgs.has(p) ? ok(`${p}-1.0-1.el9.x86_64`) : err(`package ${p} is not installed`)); };
 function* apt(c: Ctx, a: string[]): G {
   const { pos } = flags(a); const [sub, ...pk] = pos;
   if (!c.root) return err("E: Could not open lock file /var/lib/dpkg/lock-frontend - open (13: Permission denied)\nE: Unable to acquire the dpkg frontend lock, are you root?");
@@ -372,8 +389,24 @@ function* apt(c: Ctx, a: string[]): G {
   }
   return err(`E: Invalid operation ${sub}`);
 }
-CMDS.apt = apt; CMDS["apt-get"] = apt;
-CMDS.pip3 = (c, a) => {
+CMDS["apt"] = apt; CMDS["apt-get"] = apt;
+CMDS["pip"] = (c, a) => {
+  if (!c.h.pkgs.has("python-runtime")) return done(err("bash: pip: command not found", 127));
+  if (a[0] !== "install") return done(err("Usage: pip install [-r requirements.txt] PACKAGE"));
+  const requirements = opt(a, "-r", "--requirement");
+  const text = requirements ? readFile(c.h, P(c, requirements)) : a.slice(1).join("\n");
+  if (text === undefined) return done(err(`ERROR: Could not open requirements file: ${requirements}`));
+  const packages = text.split(/\r?\n/).map((line) => line.split("#")[0]!.trim()).filter(Boolean);
+  if (!packages.length) return done(err("ERROR: You must give at least one requirement to install"));
+  for (const item of packages) {
+    if (!/^(?:flask|requests|gunicorn|django|pyyaml)(?:==[\d.]+)?$/i.test(item)) {
+      return done(err(`ERROR: No matching distribution found for ${item}`));
+    }
+  }
+  for (const item of packages) c.h.pkgs.add("pip:" + item.toLowerCase().split("==")[0]);
+  return done(ok(`Successfully installed ${packages.join(" ")}`));
+};
+CMDS["pip3"] = (c, a) => {
   if (a[0] !== "install") return done(ok(a[0] === "list" ? (c.h.fs["/usr/local/bin/ansible"] ? "ansible 4.8.0" : "") : "pip 21.3.1"));
   const spec = a.filter((x) => !x.startsWith("-"))[1] ?? ""; const [name, ver = "latest"] = spec.split("==");
   if (name !== "ansible") return done(ok(`Successfully installed ${spec}`));
@@ -410,26 +443,26 @@ function* systemctl(c: Ctx, a: string[]): G {
   }
   return ok(out.join("\n"));
 }
-CMDS.systemctl = systemctl;
-CMDS.service = function* (c, a) {
+CMDS["systemctl"] = systemctl;
+CMDS["service"] = function* (c, a) {
   const [n, act] = a;
   if (n === "iptables" && act === "save") { if (!c.h.pkgs.has("iptables-services")) return err("The service command supports only basic LSB actions (start, stop, restart, try-restart, reload, force-reload, status). For other actions, please try to use systemctl."); if (!c.root) return err("iptables: Saving firewall rules to /etc/sysconfig/iptables: Permission denied"); writeFile(c.h, "/etc/sysconfig/iptables", c.h.iptables.map((r) => `-A ${r.chain} ${r.spec}`).join("\n") + "\n"); c.h.iptSaved = true; return ok("iptables: Saving firewall rules to /etc/sysconfig/iptables: [  OK  ]"); }
   if (c.f.container) { const s = c.h.svcs[n!]; if (!s) return err(`${n}: unrecognized service`); if (act === "start" || act === "restart") { s.active = false; const e = startSvc(c.w, c.h, n!); if (e) return err(e); return ok(` * Starting ${n} ...  [ OK ]`); } if (act === "stop") { s.active = false; return ok(` * Stopping ${n} [ OK ]`); } return ok(s.active ? ` * ${n} is running` : ` * ${n} is not running`); }
   return yield* systemctl(c, [act ?? "status", n ?? ""]);
 };
-CMDS.journalctl = (c, a) => { const u = opt(a, "-u", "--unit"); const n = u ? svcName(u) : ""; const j = n ? c.h.journal[n] ?? [] : Object.values(c.h.journal).flat(); if (!c.root) return done(ok("Hint: You are currently not seeing messages from other users and the system.\n-- No entries --")); return done(ok(j.length ? j.map((l) => `Nov 22 20:22:00 ${c.h.name} ${n || "systemd"}[812]: ${l}`).join("\n") : "-- No entries --")); };
-CMDS.ss = (c) => done(ok("State   Recv-Q Send-Q  Local Address:Port   Peer Address:Port  Process\n" + listeners(c.h).map((l, i) => `LISTEN  0      128     0.0.0.0:${String(l.port).padEnd(13)} 0.0.0.0:*          ${c.root ? `users:(("${l.proc}",pid=${800 + i},fd=4))` : ""}`).join("\n")));
-CMDS.netstat = (c) => done(ok("Proto Local Address           State       PID/Program name\n" + listeners(c.h).map((l, i) => `tcp   0.0.0.0:${String(l.port).padEnd(17)} LISTEN      ${c.root ? `${800 + i}/${l.proc}` : "-"}`).join("\n")));
+CMDS["journalctl"] = (c, a) => { const u = opt(a, "-u", "--unit"); const n = u ? svcName(u) : ""; const j = n ? c.h.journal[n] ?? [] : Object.values(c.h.journal).flat(); if (!c.root) return done(ok("Hint: You are currently not seeing messages from other users and the system.\n-- No entries --")); return done(ok(j.length ? j.map((l) => `Nov 22 20:22:00 ${c.h.name} ${n || "systemd"}[812]: ${l}`).join("\n") : "-- No entries --")); };
+CMDS["ss"] = (c) => done(ok("State   Recv-Q Send-Q  Local Address:Port   Peer Address:Port  Process\n" + listeners(c.h).map((l, i) => `LISTEN  0      128     0.0.0.0:${String(l.port).padEnd(13)} 0.0.0.0:*          ${c.root ? `users:(("${l.proc}",pid=${800 + i},fd=4))` : ""}`).join("\n")));
+CMDS["netstat"] = (c) => done(ok("Proto Local Address           State       PID/Program name\n" + listeners(c.h).map((l, i) => `tcp   0.0.0.0:${String(l.port).padEnd(17)} LISTEN      ${c.root ? `${800 + i}/${l.proc}` : "-"}`).join("\n")));
 const procs = (c: Ctx) => listeners(c.h).map((l, i) => ({ pid: 800 + i, ...l }));
-CMDS.ps = (c) => done(ok("USER       PID %CPU %MEM COMMAND\nroot         1  0.0  0.1 /usr/lib/systemd/systemd\n" + procs(c).map((p) => `root     ${String(p.pid).padStart(5)}  0.0  0.4 /usr/sbin/${p.proc}`).join("\n")));
-CMDS.kill = (c, a) => { const pid = +(a.filter((x) => !x.startsWith("-"))[0] ?? 0); const p = procs(c).find((x) => x.pid === pid); if (!p) return done(err(`bash: kill: (${pid}) - No such process`)); if (!c.root) return done(err(`bash: kill: (${pid}) - Operation not permitted`)); const ex = c.h.extraListeners.findIndex((l) => l.proc === p.proc); if (ex >= 0) c.h.extraListeners.splice(ex, 1); else if (c.h.svcs[p.proc]) c.h.svcs[p.proc]!.active = false; return done(ok()); };
-CMDS.pkill = (c, a) => { const n = a[a.length - 1]!; if (!c.root) return done(err("pkill: killing pid failed: Operation not permitted")); if (c.h.svcs[n]) c.h.svcs[n]!.active = false; c.h.extraListeners = c.h.extraListeners.filter((l) => l.proc !== n); return done(ok()); };
+CMDS["ps"] = (c) => done(ok("USER       PID %CPU %MEM COMMAND\nroot         1  0.0  0.1 /usr/lib/systemd/systemd\n" + procs(c).map((p) => `root     ${String(p.pid).padStart(5)}  0.0  0.4 /usr/sbin/${p.proc}`).join("\n")));
+CMDS["kill"] = (c, a) => { const pid = +(a.filter((x) => !x.startsWith("-"))[0] ?? 0); const p = procs(c).find((x) => x.pid === pid); if (!p) return done(err(`bash: kill: (${pid}) - No such process`)); if (!c.root) return done(err(`bash: kill: (${pid}) - Operation not permitted`)); const ex = c.h.extraListeners.findIndex((l) => l.proc === p.proc); if (ex >= 0) c.h.extraListeners.splice(ex, 1); else if (c.h.svcs[p.proc]) c.h.svcs[p.proc]!.active = false; return done(ok()); };
+CMDS["pkill"] = (c, a) => { const n = a[a.length - 1]!; if (!c.root) return done(err("pkill: killing pid failed: Operation not permitted")); if (c.h.svcs[n]) c.h.svcs[n]!.active = false; c.h.extraListeners = c.h.extraListeners.filter((l) => l.proc !== n); return done(ok()); };
 
 // ---------- SELinux / iptables ----------
-CMDS.sestatus = (c) => { const mode = /^SELINUX=(\w+)/m.exec(readFile(c.h, "/etc/selinux/config") ?? "")?.[1] ?? "enforcing"; return done(ok(c.h.selinuxRuntime === "disabled" ? "SELinux status:                 disabled" : `SELinux status:                 enabled\nCurrent mode:                   ${c.h.selinuxRuntime}\nMode from config file:          ${mode}\nPolicy from config file:        targeted`)); };
-CMDS.getenforce = (c) => done(ok(c.h.selinuxRuntime[0]!.toUpperCase() + c.h.selinuxRuntime.slice(1)));
-CMDS.setenforce = (c, a) => { if (!c.root) return done(err("setenforce: setenforce() failed")); c.h.selinuxRuntime = a[0] === "0" || a[0] === "Permissive" ? "permissive" : "enforcing"; return done(ok()); };
-CMDS.iptables = (c, a) => {
+CMDS["sestatus"] = (c) => { const mode = /^SELINUX=(\w+)/m.exec(readFile(c.h, "/etc/selinux/config") ?? "")?.[1] ?? "enforcing"; return done(ok(c.h.selinuxRuntime === "disabled" ? "SELinux status:                 disabled" : `SELinux status:                 enabled\nCurrent mode:                   ${c.h.selinuxRuntime}\nMode from config file:          ${mode}\nPolicy from config file:        targeted`)); };
+CMDS["getenforce"] = (c) => done(ok(c.h.selinuxRuntime[0]!.toUpperCase() + c.h.selinuxRuntime.slice(1)));
+CMDS["setenforce"] = (c, a) => { if (!c.root) return done(err("setenforce: setenforce() failed")); c.h.selinuxRuntime = a[0] === "0" || a[0] === "Permissive" ? "permissive" : "enforcing"; return done(ok()); };
+CMDS["iptables"] = (c, a) => {
   if (!c.root) return done(err("iptables v1.8.8 (nf_tables): Could not fetch rule set generation id: Permission denied (you must be root)", 4));
   const i = a.findIndex((x) => ["-A", "-I", "-D", "-L", "-F", "-S", "--list"].includes(x)); const act = a[i]; const chain = a[i + 1] && !a[i + 1]!.startsWith("-") ? a[i + 1]! : "INPUT";
   const spec = a.filter((_, j) => j !== i && j !== i + 1 && !(act === "-I" && /^\d+$/.test(a[j]!) && j === i + 2)).join(" ");
@@ -443,7 +476,7 @@ CMDS.iptables = (c, a) => {
 CMDS["iptables-save"] = (c) => done(ok(c.h.iptables.map((r) => `-A ${r.chain} ${r.spec}`).join("\n")));
 
 // ---------- Cron ----------
-CMDS.crontab = function* (c, a) {
+CMDS["crontab"] = function* (c, a) {
   const u = opt(a, "-u") ?? c.user; if (u !== c.user && !c.root) return err("must be privileged to use -u");
   if (a.includes("-l")) { const t = c.h.crontabs[u]; return t ? ok(t.replace(/\n$/, "")) : err(`no crontab for ${u}`); }
   if (a.includes("-r")) { delete c.h.crontabs[u]; return ok(); }
@@ -454,7 +487,7 @@ CMDS.crontab = function* (c, a) {
 };
 
 // ---------- Web / curl ----------
-CMDS.curl = (c, a) => {
+CMDS["curl"] = (c, a) => {
   const url = a.filter((x, i) => !x.startsWith("-") && !["-o", "-H", "-X", "-d", "-u", "--data"].includes(a[i - 1] ?? ""))[0]; if (!url) return done(err("curl: try 'curl --help' for more information", 2));
   const r = http(c.w, c.h, url);
   if (!r.ok) return done(err(r.err!, 7));
@@ -462,8 +495,8 @@ CMDS.curl = (c, a) => {
   if (a.includes("-I") || a.includes("--head")) return done(ok(`HTTP/1.1 ${r.status} ${r.status === 200 ? "OK" : r.status === 404 ? "Not Found" : "Bad Gateway"}\nServer: simulated\nContent-Length: ${r.body.length}`));
   return done(ok(r.body.replace(/\n$/, "")));
 };
-CMDS.nginx = (c, a) => { if (a.includes("-t")) { const e = nginxCheck(c.h); return done(e ? err(e) : ok("nginx: the configuration file /etc/nginx/nginx.conf syntax is ok\nnginx: configuration file /etc/nginx/nginx.conf test is successful")); } if (a.includes("-v")) return done(ok("nginx version: nginx/1.20.1")); return done(err("utilise systemctl start nginx")); };
-CMDS.httpd = (c, a) => done(a.includes("-t") ? ok("Syntax OK") : ok("Server version: Apache/2.4.57"));
-CMDS.apachectl = (c, a) => done(a.includes("configtest") || a.includes("-t") ? ok("Syntax OK") : err("utilise systemctl"));
-CMDS.java = () => done(ok('openjdk version "17.0.9" 2023-10-17 LTS'));
+CMDS["nginx"] = (c, a) => { if (a.includes("-t")) { const e = nginxCheck(c.h); return done(e ? err(e) : ok("nginx: the configuration file /etc/nginx/nginx.conf syntax is ok\nnginx: configuration file /etc/nginx/nginx.conf test is successful")); } if (a.includes("-v")) return done(ok("nginx version: nginx/1.20.1")); return done(err("utilise systemctl start nginx")); };
+CMDS["httpd"] = (c, a) => done(a.includes("-t") ? ok("Syntax OK") : ok("Server version: Apache/2.4.57"));
+CMDS["apachectl"] = (c, a) => done(a.includes("configtest") || a.includes("-t") ? ok("Syntax OK") : err("utilise systemctl"));
+CMDS["java"] = () => done(ok('openjdk version "17.0.9" 2023-10-17 LTS'));
 export { CREDS };

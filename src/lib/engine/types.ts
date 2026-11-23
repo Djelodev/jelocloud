@@ -1,11 +1,11 @@
 import type { Container, Host, World } from "./world";
-export type Ask = { kind: "password"; prompt: string } | { kind: "edit"; path: string; content: string };
+export type Ask = { kind: "confirm"; prompt: string } | { kind: "password"; prompt: string } | { kind: "edit"; path: string; content: string };
 export type R = { out: string; code: number };
 export type G = Generator<Ask, R, string | null>;
 export type Frame = { host: Host; user: string; cwd: string; repl?: "mysql" | "psql"; sudoOk?: boolean; container?: Container; env: Record<string, string>; batch?: boolean; via?: string };
 export type Ctx = { w: World; sh: import("./shell").Shell; f: Frame; h: Host; user: string; stdin: string; root: boolean };
 export type Cmd = (c: Ctx, a: string[]) => G;
-export const CMDS: Record<string, Cmd> = {};
+export const CMDS: Record<string, Cmd> = Object.create(null);
 export const ok = (out = ""): R => ({ out, code: 0 });
 export const err = (out: string, code = 1): R => ({ out, code });
 // eslint-disable-next-line require-yield

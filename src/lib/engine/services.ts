@@ -55,7 +55,8 @@ export function startSvc(w: World, h: Host, svc: string): string | null {
   if (svc === "postgresql" && !readFile(h, "/var/lib/pgsql/data/PG_VERSION")) return fail(`Directory "/var/lib/pgsql/data" is missing or empty.\nUse "postgresql-setup --initdb" to initialize the database cluster.`);
   if (svc === "httpd" && mine.length === 0) return fail("AH00534: httpd: Configuration error: No MPM loaded / no Listen directive.");
   if (svc === "php-fpm") { const l = /^\s*listen\s*=\s*(\S+)/m.exec(readFile(h, "/etc/php-fpm.d/www.conf") ?? "")?.[1] ?? ""; if (l.startsWith("/") && !isDir(h, l.replace(/\/[^/]+$/, ""))) return fail(`ERROR: unable to bind listening socket for address '${l}': No such file or directory`); }
-  s.active = true; s.failed = undefined;
+  if (svc === "sshd") s.config = readFile(h, "/etc/ssh/sshd_config") ?? "";
+  s.active = true; delete s.failed;
   (h.journal[svc] ??= []).push(`Started ${svc}.service.`);
   return null;
 }
@@ -105,7 +106,7 @@ export function http(w: World, from: Host, url: string, depth = 0): HttpRes {
       if (up && depth < 3) {
         const blk = new RegExp(`upstream\\s+${up}\\s*{([^}]*)}`).exec(conf)?.[1];
         const servers = blk ? [...blk.matchAll(/server\s+([^;\s]+)/g)].map((x) => x[1]!) : [up];
-        const n = ((w.meta.rr as number) ?? 0); w.meta.rr = n + 1;
+        const n = ((w.meta["rr"] as number) ?? 0); w.meta["rr"] = n + 1;
         for (let i = 0; i < servers.length; i++) { const r = http(w, h, "http://" + servers[(n + i) % servers.length] + path, depth + 1); if (r.ok) return r; }
         return { ok: true, status: 502, body: "<html><head><title>502 Bad Gateway</title></head><body><center><h1>502 Bad Gateway</h1></center><hr><center>nginx</center></body></html>" };
       }

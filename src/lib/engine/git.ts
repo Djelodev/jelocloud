@@ -1,4 +1,5 @@
 // Git réaliste : commits, branches, merge (fast-forward / 3-way / conflits), rebase, cherry-pick, revert, reset, stash, remotes, hooks.
+import { triggerScmJobs } from "./misc";
 import { CMDS, type Ctx, type G, err, ok, opt } from "./types";
 import { abs, canWrite, runScript } from "./shell";
 import { type Host, children, isDir, mkdirp, norm, parent, readFile, rmrf, writeFile } from "./world";
@@ -17,7 +18,7 @@ export function findRepo(h: Host, cwd: string): Repo | undefined {
 export function newRepo(h: Host, path: string, bare: boolean, owner: string): Repo {
   const r: Repo = { path, bare, commits: {}, branches: {}, head: "master", remotes: {}, remoteRefs: {}, index: {}, stash: [], tags: {}, unmerged: new Set(), config: {} };
   repos(h)[path] = r; mkdirp(h, path, owner);
-  if (bare) { writeFile(h, path + "/HEAD", "ref: refs/heads/master\n", owner); writeFile(h, path + "/config", "[core]\n\tbare = true\n", owner); for (const s of ["post-update", "pre-commit", "pre-push", "update"]) writeFile(h, `${path}/hooks/${s}.sample`, s === "post-update" ? "#!/bin/sh\n# An example hook script to prepare a packed repository for use over\n# dumb transports.\nexec git update-server-info\n" : "#!/bin/sh\n", owner, 0o755); mkdirp(h, path + "/refs/heads", owner); mkdirp(h, path + "/objects", owner); }
+  if (bare) { mkdirp(h, path + "/hooks", owner); writeFile(h, path + "/HEAD", "ref: refs/heads/master\n", owner); writeFile(h, path + "/config", "[core]\n\tbare = true\n", owner); for (const s of ["post-update", "pre-commit", "pre-push", "update"]) writeFile(h, `${path}/hooks/${s}.sample`, s === "post-update" ? "#!/bin/sh\n# An example hook script to prepare a packed repository for use over\n# dumb transports.\nexec git update-server-info\n" : "#!/bin/sh\n", owner, 0o755); mkdirp(h, path + "/refs/heads", owner); mkdirp(h, path + "/objects", owner); }
   else { mkdirp(h, path + "/.git", owner); writeFile(h, path + "/.git/HEAD", "ref: refs/heads/master\n", owner); mkdirp(h, path + "/.git/hooks", owner); }
   return r;
 }
@@ -64,13 +65,13 @@ function threeWay(b: Record<string, string>, o: Record<string, string>, t: Recor
   }
   return { out, conflicts };
 }
-function* runHook(c: Ctx, remote: Repo, hook: string): G {
+function* runHook(c: Ctx, remote: Repo, hook: string, refs: string[]): G {
   const p = `${remote.path}/hooks/${hook}`; const n = c.h.fs[p]; if (!n || !(n.mode & 0o100)) return ok();
-  const r = yield* runScript({ ...c, f: { ...c.f, cwd: remote.path } }, p, [], false);
+  const r = yield* runScript({ ...c, f: { ...c.f, cwd: remote.path } }, p, refs, false);
   return { out: r.out ? r.out.split("\n").map((l) => "remote: " + l).join("\n") : "", code: 0 };
 }
 
-CMDS.git = function* (c, a) {
+CMDS["git"] = function* (c, a) {
   const [sub, ...rest] = a; const h = c.h;
   if (!sub || sub === "--version" || sub === "version") return ok("git version 2.43.0");
   if (sub === "init") {
@@ -88,7 +89,7 @@ CMDS.git = function* (c, a) {
     if (h.fs[dst] && children(h, dst).length) return err(`fatal: destination path '${pos[1] ?? dst.split("/").pop()}' already exists and is not an empty directory.`);
     if (!canWrite(c, dst)) return err(`fatal: could not create work tree dir '${dst}': Permission denied`);
     const r = newRepo(h, dst, false, c.user); copyCommits(sr, r, undefined); Object.assign(r.commits, sr.commits);
-    r.remotes.origin = sp; for (const [b, id] of Object.entries(sr.branches)) r.remoteRefs[`origin/${b}`] = id;
+    r.remotes["origin"] = sp; for (const [b, id] of Object.entries(sr.branches)) r.remoteRefs[`origin/${b}`] = id;
     const def = sr.branches[sr.head] ? sr.head : Object.keys(sr.branches)[0];
     if (def) { r.head = def; r.branches[def] = sr.branches[def]!; r.index = { ...tree(r, r.branches[def]) }; setWork(h, r, r.index, c.user); }
     return ok(`Cloning into '${dst.split("/").pop()}'...\n${def ? "done." : "warning: You appear to have cloned an empty repository."}`);
@@ -128,11 +129,11 @@ CMDS.git = function* (c, a) {
     case "commit": {
       const m = opt(rest, "-m") ?? opt(rest, "-am"); if (rest.includes("-a") || rest.includes("-am")) { const w = wt(); for (const k of Object.keys(r.index)) { if (w[k] === undefined) delete r.index[k]; else r.index[k] = w[k]!; } }
       if (r.unmerged.size) return err("error: Committing is not possible because you have unmerged files.\nhint: Fix them up in the work tree, and then use 'git add/rm <file>'\nfatal: Exiting because of an unresolved conflict.", 128);
-      if (!r.config["user.email"] && !c.w.meta.gitIdentityOk) { /* identité implicite acceptée */ }
+      if (!r.config["user.email"] && !c.w.meta["gitIdentityOk"]) { /* identité implicite acceptée */ }
       const hid = headId(r); const msg = m ?? (r.merging ? `Merge branch '${r.merging}'` : undefined);
       if (!msg) return err("Aborting commit due to empty commit message. (utilise -m \"message\")");
       if (!r.merging && hid && JSON.stringify(r.index) === JSON.stringify(tree(r, hid))) return err(`On branch ${r.head}\nnothing to commit, working tree clean`);
-      const parents = hid ? [hid] : []; if (r.merging) { const o = resolve(r, r.merging); if (o) parents.push(o); r.merging = undefined; }
+      const parents = hid ? [hid] : []; if (r.merging) { const o = resolve(r, r.merging); if (o) parents.push(o); delete r.merging; }
       const id = doCommit(msg, parents); return ok(`[${r.head}${hid ? "" : " (root-commit)"} ${short(id)}] ${msg}\n ${Object.keys(r.index).length} file(s) changed`);
     }
     case "log": {
@@ -140,7 +141,7 @@ CMDS.git = function* (c, a) {
       if (!id) return err(`fatal: your current branch '${r.head}' does not have any commits yet`, 128);
       const out: string[] = []; const n = Number(opt(rest, "-n") ?? (rest.find((x) => /^-\d+$/.test(x))?.slice(1)) ?? 50);
       const decor = (x: string) => { const d = [...(headId(r) === x ? [`HEAD -> ${r.head}`] : []), ...Object.entries(r.branches).filter(([b, v]) => v === x && b !== r.head).map(([b]) => b), ...Object.entries(r.remoteRefs).filter(([, v]) => v === x).map(([b]) => b), ...Object.entries(r.tags).filter(([, v]) => v === x).map(([t]) => "tag: " + t)]; return d.length ? ` \x1b[33m(${d.join(", ")})\x1b[0m` : ""; };
-      while (id && out.length < n) { const cm = r.commits[id]!; out.push(rest.includes("--oneline") ? `\x1b[33m${short(id)}\x1b[0m${decor(id)} ${cm.msg}` : `\x1b[33mcommit ${id}\x1b[0m${decor(id)}\nAuthor: ${cm.author} <${cm.author}@stratos.xfusioncorp.com>\n\n    ${cm.msg}\n`); id = cm.parents[0]; }
+      while (id && out.length < n) { const cm: Commit = r.commits[id]!; out.push(rest.includes("--oneline") ? `\x1b[33m${short(id)}\x1b[0m${decor(id)} ${cm.msg}` : `\x1b[33mcommit ${id}\x1b[0m${decor(id)}\nAuthor: ${cm.author} <${cm.author}@stratos.xfusioncorp.com>\n\n    ${cm.msg}\n`); id = cm.parents[0]; }
       return ok(out.join("\n"));
     }
     case "show": { const id = resolve(r, rest[0] ?? "HEAD"); if (!id) return err("fatal: bad revision"); const cm = r.commits[id]!; const p = tree(r, cm.parents[0]); return ok(`commit ${id}\n\n    ${cm.msg}\n\n` + Object.keys({ ...p, ...cm.tree }).filter((k) => p[k] !== cm.tree[k]).map((k) => `diff --git a/${k} b/${k}\n-${p[k] ?? ""}\n+${cm.tree[k] ?? ""}`).join("\n")); }
@@ -155,19 +156,19 @@ CMDS.git = function* (c, a) {
     case "checkout": case "switch": {
       const create = rest.includes("-b") || rest.includes("-c"); const pos = rest.filter((x) => !x.startsWith("-")); const name = pos[0]; if (!name) return err("fatal: missing branch or commit argument");
       if (pos[0] === "--" || (sub === "checkout" && !create && !resolve(r, name) && wt()[name] !== undefined)) { const f = pos[pos.length - 1]!; const v = r.index[f]; if (v !== undefined) writeFile(h, r.path + "/" + f, v, owner); return ok(`Updated 1 path from the index`); }
-      if (create) { if (r.branches[name]) return err(`fatal: a branch named '${name}' already exists`, 128); const from = resolve(r, pos[1] ?? "HEAD"); r.branches[name] = from!; r.head = name; r.detached = undefined; if (from) { r.index = { ...tree(r, from) }; setWork(h, r, { ...wt(), ...r.index }, owner); } return ok(`Switched to a new branch '${name}'`); }
+      if (create) { if (r.branches[name]) return err(`fatal: a branch named '${name}' already exists`, 128); const from = resolve(r, pos[1] ?? "HEAD"); r.branches[name] = from!; r.head = name; delete r.detached; if (from) { r.index = { ...tree(r, from) }; setWork(h, r, { ...wt(), ...r.index }, owner); } return ok(`Switched to a new branch '${name}'`); }
       let target = r.branches[name];
       if (!target && r.remoteRefs[`origin/${name}`]) { r.branches[name] = target = r.remoteRefs[`origin/${name}`]!; }
       if (!target) return err(`error: pathspec '${name}' did not match any file(s) known to git`);
       const w = wt(); const cur = tree(r, headId(r)); const dirty = Object.keys(cur).filter((k) => w[k] !== cur[k] && tree(r, target)[k] !== cur[k]);
       if (dirty.length) return err(`error: Your local changes to the following files would be overwritten by checkout:\n\t${dirty.join("\n\t")}\nPlease commit your changes or stash them before you switch branches.\nAborting`);
       const untracked = Object.fromEntries(Object.entries(w).filter(([k]) => cur[k] === undefined && r.index[k] === undefined));
-      r.head = name; r.detached = undefined; r.index = { ...tree(r, target) }; setWork(h, r, { ...r.index, ...untracked }, owner);
+      r.head = name; delete r.detached; r.index = { ...tree(r, target) }; setWork(h, r, { ...r.index, ...untracked }, owner);
       return ok(`Switched to branch '${name}'`);
     }
     case "merge": {
       const name = rest.filter((x) => !x.startsWith("-"))[0]; if (!name) return err("fatal: No remote for the current branch.");
-      if (rest.includes("--abort")) { r.merging = undefined; r.unmerged.clear(); r.index = { ...tree(r, headId(r)) }; setWork(h, r, r.index, owner); return ok(); }
+      if (rest.includes("--abort")) { delete r.merging; r.unmerged.clear(); r.index = { ...tree(r, headId(r)) }; setWork(h, r, r.index, owner); return ok(); }
       const o = resolve(r, name); if (!o) return err(`merge: ${name} - not something we can merge`);
       return yield* mergeInto(c, r, o, name);
     }
@@ -191,18 +192,22 @@ CMDS.git = function* (c, a) {
       const rr = remoteRepo(c, r, rem); if (typeof rr === "string") return err(rr, 128);
       if (!canWrite(c, rr.path)) return err(`error: remote unpack failed: unable to create temporary object directory\nTo ${r.remotes[rem]}\n ! [remote rejected] (unpacker error)\nerror: failed to push some refs to '${r.remotes[rem]}'`);
       const branches = rest.includes("--all") ? Object.keys(r.branches) : [pos[1]?.split(":")[0] ?? r.head];
-      const out: string[] = []; const tagsOnly = rest.includes("--tags");
+      const out: string[] = []; const updated: string[] = []; const tagsOnly = rest.includes("--tags");
       if (tagsOnly) { Object.assign(rr.tags, r.tags); copyCommits(r, rr, undefined); Object.assign(rr.commits, r.commits); return ok(`To ${r.remotes[rem]}\n${Object.keys(r.tags).map((t) => ` * [new tag]         ${t} -> ${t}`).join("\n")}`); }
       for (const b of branches) {
         const loc = r.branches[b]; if (!loc) return err(`error: src refspec ${b} does not match any\nerror: failed to push some refs to '${r.remotes[rem]}'`);
         const remId = rr.branches[b];
         if (remId === loc) { out.push("Everything up-to-date"); continue; }
         if (remId && !ancestors(r, loc).has(remId) && !force) return err(`To ${r.remotes[rem]}\n ! [rejected]        ${b} -> ${b} (fetch first)\nerror: failed to push some refs to '${r.remotes[rem]}'\nhint: Updates were rejected because the remote contains work that you do not\nhint: have locally. Integrate the remote changes (e.g. 'git pull ...') before pushing again.`);
-        Object.assign(rr.commits, r.commits); rr.branches[b] = loc; r.remoteRefs[`${rem}/${b}`] = loc;
+        Object.assign(rr.commits, r.commits); rr.branches[b] = loc; updated.push(b); r.remoteRefs[`${rem}/${b}`] = loc;
         if (!rr.branches[rr.head]) rr.head = b;
         out.push(`To ${r.remotes[rem]}\n ${remId ? (force && !ancestors(r, loc).has(remId) ? "+ " : "  ") + short(remId) + (force ? "..." : "..") + short(loc) : "* [new branch]     "} ${b} -> ${b}${force && remId ? " (forced update)" : ""}`);
       }
-      const hk = yield* runHook(c, rr, "post-update"); if (hk.out) out.unshift(hk.out);
+      if (updated.length) {
+        const hk = yield* runHook(c, rr, "post-update", updated.map((b) => "refs/heads/" + b));
+        if (hk.out) out.unshift(hk.out);
+        if (updated.includes("master")) yield* triggerScmJobs(c, rr.path);
+      }
       return ok(`Enumerating objects: 5, done.\nWriting objects: 100% (3/3), done.\n${out.join("\n")}`);
     }
     case "revert": {
@@ -234,7 +239,7 @@ CMDS.git = function* (c, a) {
       return err(`error: unknown subcommand: ${act}`);
     }
     case "rebase": { const ref = rest.filter((x) => !x.startsWith("-"))[0]; const id = ref ? resolve(r, ref) : undefined; if (!id) return err(`fatal: invalid upstream '${ref}'`, 128); return yield* rebaseOnto(c, r, id, ref!); }
-    case "tag": { const n = rest.filter((x) => !x.startsWith("-"))[0]; if (!n) return ok(Object.keys(r.tags).join("\n")); const id = resolve(r, rest.filter((x) => !x.startsWith("-"))[1] ?? (r.bare ? r.branches.master ?? Object.values(r.branches)[0] ?? "" : "HEAD")); if (!id) return err("fatal: Failed to resolve 'HEAD' as a valid ref.", 128); if (r.tags[n]) return err(`fatal: tag '${n}' already exists`, 128); r.tags[n] = id; return ok(); }
+    case "tag": { const n = rest.filter((x) => !x.startsWith("-"))[0]; if (!n) return ok(Object.keys(r.tags).join("\n")); const id = resolve(r, rest.filter((x) => !x.startsWith("-"))[1] ?? (r.bare ? r.branches["master"] ?? Object.values(r.branches)[0] ?? "" : "HEAD")); if (!id) return err("fatal: Failed to resolve 'HEAD' as a valid ref.", 128); if (r.tags[n] && !rest.includes("-f") && !rest.includes("--force")) return err(`fatal: tag '${n}' already exists`, 128); r.tags[n] = id; return ok(); }
     case "diff": { const w = wt(); return ok(Object.keys(r.index).filter((k) => w[k] !== r.index[k]).map((k) => `diff --git a/${k} b/${k}\n--- a/${k}\n+++ b/${k}\n\x1b[31m-${(r.index[k] ?? "").trim()}\x1b[0m\n\x1b[32m+${(w[k] ?? "").trim()}\x1b[0m`).join("\n")); }
     case "update-server-info": case "rev-parse": return ok(sub === "rev-parse" ? headId(r) ?? "" : "");
     default: return err(`git: '${sub}' is not a git command. See 'git --help'.`, 1);
