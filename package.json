@@ -1,7 +1,6 @@
 {
   "name": "jelo-cloud",
   "private": true,
-  "sideEffects": false,
   "type": "module",
   "scripts": {
     "dev": "vite dev",
