@@ -5,7 +5,8 @@ import { CREDS } from "@/lib/engine";
 import { worldFor } from "@/lib/labs/scenario";
 import { LabTerminal } from "@/components/LabTerminal";
 import { useProgress } from "@/lib/progress";
-import { CopyCode } from "@/components/CopyCode";
+import { LabLesson, StepLesson } from "@/components/LabLesson";
+import { lessons } from "@/lib/labs/lessons";
 import { Brand } from "@/components/Brand";
 
 export const Route = createFileRoute("/lab/$day")({
@@ -47,6 +48,7 @@ function LabWorkspace({ lab }: { lab: Lab }) {
   const [confirmRestart, setConfirmRestart] = useState(false);
   const [, update] = useState(0);
   const { done, complete } = useProgress();
+  const lesson = lessons[lab.day];
   const mod = MODULES.find((module) => module.id === lab.module)!;
   const prev = LABS[lab.day - 2];
   const next = LABS[lab.day];
@@ -140,6 +142,7 @@ function LabWorkspace({ lab }: { lab: Lab }) {
           {lab.astuce && (
             <p className="mt-3 rounded bg-muted p-3 text-sm text-muted-foreground">{lab.astuce}</p>
           )}
+          {lesson && <LabLesson lesson={lesson} />}
           <section className="mt-6 rounded-md border border-border p-3">
             <div className="flex items-center justify-between gap-2">
               <h2 className="text-sm font-semibold">Vérification</h2>
@@ -147,6 +150,11 @@ function LabWorkspace({ lab }: { lab: Lab }) {
                 {passedCount}/{results.length} validés
               </span>
             </div>
+            {lesson && (
+              <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+                <strong className="text-foreground">Résultat attendu</strong> {lesson.expect}
+              </p>
+            )}
             <ul className="mt-2 space-y-2 text-sm">
               {results.map(({ label, passed }) => (
                 <li key={label} className={passed ? "text-primary" : "text-muted-foreground"}>
@@ -203,25 +211,17 @@ function LabWorkspace({ lab }: { lab: Lab }) {
             Étapes
           </h2>
           <ol className="mt-3 space-y-3">
-            {lab.steps.map((step, index) => (
-              <li key={index} className="rounded-md border border-border p-3 text-sm">
-                <div className="font-semibold">
-                  {index + 1}. {step.titre}
-                </div>
-                {step.explication && (
-                  <p className="mt-1 text-muted-foreground">{step.explication}</p>
-                )}
-                <details className="mt-2">
-                  <summary className="cursor-pointer font-mono text-xs text-accent">
-                    Afficher la solution
-                  </summary>
-                  <CopyCode text={step.cmd} label="Copier la commande" />
-                  {step.edit && (
-                    <CopyCode text={step.edit.content} label="Copier le contenu du fichier" />
-                  )}
-                </details>
-              </li>
-            ))}
+            {lab.steps.map((step, index) => {
+              const fileNote = step.edit ? lesson?.files?.[step.edit.path] : undefined;
+              return (
+                <StepLesson
+                  key={index}
+                  step={step}
+                  index={index}
+                  {...(fileNote ? { fileNote } : {})}
+                />
+              );
+            })}
           </ol>
         </aside>
         <section
