@@ -18,7 +18,19 @@ function sql(db: Db, stmt: string, pg: boolean): string {
   if (/^(USE|SELECT 1)/i.test(s)) return pg ? "" : "Database changed";
   return pg ? `ERROR:  syntax error at or near "${s.split(/\s+/)[0]}"` : `ERROR 1064 (42000): You have an error in your SQL syntax; check the manual near '${s.slice(0, 30)}' at line 1`;
 }
-const runSql = (db: Db, text: string, pg: boolean) => text.split(";").map((x) => sql(db, x, pg)).filter(Boolean).join("\n");
+function runSql(db: Db, text: string, pg: boolean) {
+  if (!/^(?:[^'"]|"(?:[^"]|"")*"|'(?:[^']|'')*')*$/.test(text)) {
+    return err("ERROR: unterminated quoted string");
+  }
+  const statements = text.match(/(?:[^;'"]|"(?:[^"]|"")*"|'(?:[^']|'')*')+/g) ?? [];
+  const lines: string[] = [];
+  for (const statement of statements) {
+    const result = sql(db, statement, pg);
+    if (result) lines.push(result);
+    if (/^ERROR(?:[: ]|$)/.test(result)) return err(lines.join("\n"));
+  }
+  return ok(lines.join("\n"));
+}
 
 CMDS["mysql"] = function* (c, a) {
   const hostOpt = opt(a, "-h"); const h = hostOpt ? Object.values(c.w.hosts).find((x) => x.name === hostOpt || x.ip === hostOpt) : c.h;
@@ -27,20 +39,20 @@ CMDS["mysql"] = function* (c, a) {
   const pw = a.find((x) => x.startsWith("-p") && x.length > 2)?.slice(2);
   if (user !== "root" || !c.root) { if (h.db.users[user] === undefined || (h.db.users[user] && pw !== h.db.users[user])) return err(`ERROR 1045 (28000): Access denied for user '${user}'@'localhost' (using password: ${pw ? "YES" : "NO"})`); }
   const e = opt(a, "-e");
-  if (e) return ok(runSql(h.db, e, false));
-  if (c.stdin) return ok(runSql(h.db, c.stdin, false));
+  if (e) return runSql(h.db, e, false);
+  if (c.stdin) return runSql(h.db, c.stdin, false);
   c.sh.stack.push({ ...c.f, repl: "mysql", env: { ...c.f.env } });
   return ok("Welcome to the MariaDB monitor.  Commands end with ; or \\g.\nServer version: 10.5.22-MariaDB MariaDB Server\nType 'help;' or '\\h' for help.");
 };
-CMDS["__mysql"] = (c, a) => { const l = a[0]!.trim(); if (/^(exit|quit|\\q)$/i.test(l)) { c.sh.stack.pop(); return done(ok("Bye")); } return done(ok(runSql(c.h.db, l, false))); };
+CMDS["__mysql"] = (c, a) => { const l = a[0]!.trim(); if (/^(exit|quit|\\q)$/i.test(l)) { c.sh.stack.pop(); return done(ok("Bye")); } return done(runSql(c.h.db, l, false)); };
 CMDS["psql"] = function* (c, a) {
   if (!c.h.svcs["postgresql"]?.active) return err('psql: error: connection to server on socket "/run/postgresql/.s.PGSQL.5432" failed: No such file or directory\n\tIs the server running locally and accepting connections on that socket?');
   const role = opt(a, "-U") ?? c.user; if (c.h.pg.users[role] === undefined) return err(`psql: error: FATAL:  role "${role}" does not exist`);
-  const e = opt(a, "-c"); if (e) return ok(runSql(c.h.pg, e, true));
+  const e = opt(a, "-c"); if (e) return runSql(c.h.pg, e, true);
   c.sh.stack.push({ ...c.f, repl: "psql", env: { ...c.f.env } });
   return ok('psql (13.14)\nType "help" for help.');
 };
-CMDS["__psql"] = (c, a) => { const l = a[0]!.trim(); if (/^(\\q|exit|quit)$/.test(l)) { c.sh.stack.pop(); return done(ok()); } return done(ok(runSql(c.h.pg, l, true))); };
+CMDS["__psql"] = (c, a) => { const l = a[0]!.trim(); if (/^(\\q|exit|quit)$/.test(l)) { c.sh.stack.pop(); return done(ok()); } return done(runSql(c.h.pg, l, true)); };
 CMDS["postgresql-setup"] = (c, a) => { if (!c.root) return done(err("postgresql-setup: Permission denied")); if (!a.includes("--initdb") && !a.includes("initdb")) return done(err("Usage: postgresql-setup --initdb")); if (readFile(c.h, "/var/lib/pgsql/data/PG_VERSION")) return done(err('Data directory "/var/lib/pgsql/data" is not empty!')); writeFile(c.h, "/var/lib/pgsql/data/PG_VERSION", "13\n", "postgres"); writeFile(c.h, "/var/lib/pgsql/data/postgresql.conf", "#listen_addresses = 'localhost'\n", "postgres"); writeFile(c.h, "/var/lib/pgsql/data/pg_hba.conf", "local all all peer\nhost all all 127.0.0.1/32 ident\n", "postgres"); return done(ok(" * Initializing database in '/var/lib/pgsql/data'\n * Initialized, logs are in /var/lib/pgsql/initdb_postgresql.log")); };
 
 // ---------- Gitea CLI (tea) ----------

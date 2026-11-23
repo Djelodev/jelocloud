@@ -3,6 +3,28 @@ import { type Ask, CMDS, type Ctx, type Frame, type G, type R, err, ok } from ".
 import { type FNode, type Host, type World, base, children, isDir, mkdirp, norm, parent, readFile, writeFile } from "./world";
 
 type Tok = { v: string; op?: boolean; q?: boolean };
+const sequenceOperators = new Set(["&&", "||", ";", "&"]);
+const redirectOperators = new Set([">", ">>", "<"]);
+
+function syntaxError(tokens: Tok[]) {
+  const unexpected = (token: string) => `bash: syntax error near unexpected token \`${token}'`;
+  let needsCommand = true;
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i]!;
+    if (!token.op) { needsCommand = false; continue; }
+    if (redirectOperators.has(token.v)) {
+      const target = tokens[++i];
+      if (!target || target.op || !target.v) return unexpected(target?.v ?? "newline");
+      needsCommand = false;
+    } else if (token.v === "|" || sequenceOperators.has(token.v)) {
+      if (needsCommand) return unexpected(token.v);
+      needsCommand = true;
+    }
+  }
+  const last = tokens.at(-1);
+  if (last?.op && ["|", "&&", "||"].includes(last.v)) return unexpected("newline");
+  return undefined;
+}
 export function tokenize(s: string, env: Record<string, string>): Tok[] | string {
   const out: Tok[] = []; let cur = ""; let has = false; let quoted = false; let i = 0;
   const push = () => { if (has) out.push({ v: cur, q: quoted }); cur = ""; has = false; quoted = false; };
@@ -56,9 +78,11 @@ export class Shell {
     const interactive = this.f === f;
     const t = tokenize(input, this.envFor(f));
     if (typeof t === "string") return err(t, 2);
+    const invalid = syntaxError(t);
+    if (invalid) return err(invalid, 2);
     // séquence : liste [pipeline, opérateur précédent]
     const seq: { toks: Tok[]; op: string }[] = []; let cur: Tok[] = []; let op = ";";
-    for (const x of t) { if (x.op && ["&&", "||", ";", "&"].includes(x.v)) { seq.push({ toks: cur, op }); cur = []; op = x.v === "&" ? ";" : x.v; } else cur.push(x); }
+    for (const x of t) { if (x.op && sequenceOperators.has(x.v)) { seq.push({ toks: cur, op }); cur = []; op = x.v === "&" ? ";" : x.v; } else cur.push(x); }
     seq.push({ toks: cur, op });
     let out: string[] = []; let code = 0;
     for (const s of seq) {
@@ -79,7 +103,7 @@ export class Shell {
       const args: string[] = []; let redir: { mode: ">" | ">>"; path: string } | undefined; let inFile: string | undefined;
       for (let i = 0; i < p.length; i++) {
         const x = p[i]!;
-        if (x.op && [">", ">>", "<"].includes(x.v)) {
+        if (x.op && redirectOperators.has(x.v)) {
           const path = p[++i];
           if (!path || path.op || !path.v) return err("bash: syntax error near unexpected token `newline'", 2);
           if (x.v === "<") inFile = path.v;
@@ -186,11 +210,19 @@ export function vread(c: Ctx, p: string): string | undefined {
 const CMD_PKG: Record<string, string> = { git: "git", docker: "docker-ce", nginx: "nginx", httpd: "httpd", apachectl: "httpd", mysql: "mariadb", psql: "postgresql", "postgresql-setup": "postgresql-server", crontab: "cronie", sestatus: "policycoreutils", getenforce: "policycoreutils", setenforce: "policycoreutils", pip3: "python3-pip", java: "java-17-openjdk", zip: "zip", unzip: "unzip", sshpass: "sshpass", setfacl: "acl", getfacl: "acl", php: "php-fpm" };
 const BIN: Record<string, string> = { ansible: "ansible", "ansible-playbook": "ansible", "ansible-inventory": "ansible", terraform: "terraform", kubectl: "kubectl", tea: "tea", "jenkins-cli": "jenkins-cli" };
 function available(c: Ctx, name: string): boolean {
-  if (c.f.container) { const ubuntuOk = ["apt", "apt-get", "service", "ls", "cat", "echo", "cd", "pwd", "mkdir", "touch", "rm", "cp", "mv", "sed", "grep", "exit", "head", "tail", "chmod", "chown", "whoami", "hostname", "curl", "printf", "wc", "id", "date", "env", "python3", "pip", "bash", "sh", "help", "clear", "ps", "vi", "nano", "vim", "apache2ctl", "nginx"]; if (!ubuntuOk.includes(name)) return false; }
+  if (c.f.container) { const ubuntuOk = ["apt", "apt-get", "service", "which", "ls", "cat", "echo", "cd", "pwd", "mkdir", "touch", "rm", "cp", "mv", "sed", "grep", "exit", "head", "tail", "chmod", "chown", "whoami", "hostname", "curl", "printf", "wc", "id", "date", "env", "python3", "pip", "bash", "sh", "help", "clear", "ps", "vi", "nano", "vim", "apache2ctl", "nginx"]; if (!ubuntuOk.includes(name)) return false; }
   const pkg = CMD_PKG[name]; if (pkg) return c.h.pkgs.has(pkg);
   const bin = BIN[name]; if (bin) return !!c.h.fs["/usr/local/bin/" + bin] || !!c.h.fs[(c.h.users[c.user]?.home ?? "") + "/.local/bin/" + bin];
   if (c.f.container && (name === "apache2ctl")) return c.h.pkgs.has("apache2");
   return true;
+}
+
+export function commandPath(c: Ctx, name: string) {
+  if (!CMDS[name] || name.startsWith("__") || !available(c, name)) return undefined;
+  const bin = BIN[name];
+  if (!bin) return "/usr/bin/" + name;
+  if (c.h.fs["/usr/local/bin/" + bin]) return "/usr/local/bin/" + name;
+  return (c.h.users[c.user]?.home ?? "") + "/.local/bin/" + name;
 }
 
 export function* runScript(c: Ctx, path: string, args: string[], direct: boolean): G {

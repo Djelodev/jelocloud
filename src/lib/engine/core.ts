@@ -1,6 +1,6 @@
 // Commandes Linux de base, utilisateurs, paquets, services, SSH, réseau.
 import { CMDS, type Ctx, type G, done, err, flags, ok, opt } from "./types";
-import { abs, canRead, canWrite, runScript, vread } from "./shell";
+import { abs, canRead, canWrite, commandPath, runScript, vread } from "./shell";
 import { http, listeners, nginxCheck, startSvc } from "./services";
 import { CREDS, PKGS, PKG_ALIASES, addUser, base, children, copyTree, installPkg, isDir, mkdirp, norm, parent, readFile, resolveHost, rmrf, writeFile } from "./world";
 
@@ -42,7 +42,14 @@ CMDS["test"] = (c, a) => {
   }
   return done(err("test: invalid expression", 2));
 };
-CMDS["which"] = (c, a) => done(a[0] && CMDS[a[0]] ? ok(`/usr/bin/${a[0]}`) : err(`which: no ${a[0]} in (/usr/local/bin:/usr/bin)`));
+CMDS["which"] = (c, a) => {
+  if (!a.length) return done(err("Usage: which COMMAND"));
+  const results = a.map((name) => {
+    const path = commandPath(c, name);
+    return path ? ok(path) : err(`which: no ${name} in (/usr/local/bin:/usr/bin)`);
+  });
+  return done({ out: results.map((result) => result.out).join("\n"), code: results.some((result) => result.code) ? 1 : 0 });
+};
 CMDS["cd"] = (c, a) => {
   const p = a[0] ? (a[0] === "-" ? c.f.cwd : P(c, a[0])) : c.h.users[c.user]?.home ?? "/";
   if (!c.h.fs[p]) return done(err(`bash: cd: ${a[0]}: No such file or directory`));
