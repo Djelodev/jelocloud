@@ -109,6 +109,8 @@ export function LabTerminal({ world, day, onChange }: Props) {
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [tryNumber, setTryNumber] = useState(0);
   const focusInput = useRef<(() => void) | undefined>(undefined);
+  const interrupt = useRef<(() => void) | undefined>(undefined);
+  const [awaitingInput, setAwaitingInput] = useState(false);
   useEffect(() => {
     onChangeRef.current = onChange;
   }, [onChange]);
@@ -203,6 +205,7 @@ export function LabTerminal({ world, day, onChange }: Props) {
             if (!result || result.done) {
               pending = undefined;
               kind = undefined;
+              setAwaitingInput(false);
               if (result?.value.out === "\x1bc") terminal.reset();
               else if (result?.value.out) terminal.writeln(result.value.out);
               historyAt = shell.history.length;
@@ -212,6 +215,7 @@ export function LabTerminal({ world, day, onChange }: Props) {
               return;
             }
             kind = result.value.kind;
+            setAwaitingInput(kind !== "edit");
             if (result.value.kind === "edit") {
               setEditor({
                 ...result.value,
@@ -228,6 +232,7 @@ export function LabTerminal({ world, day, onChange }: Props) {
             pending = undefined;
             kind = undefined;
             pastedLines = [];
+            setAwaitingInput(false);
             terminal.writeln(
               error instanceof Error
                 ? "Erreur du simulateur · " + error.message
@@ -251,16 +256,37 @@ export function LabTerminal({ world, day, onChange }: Props) {
         resize.observe(container);
         terminal.writeln(`Jour ${day} · Tape help pour découvrir les commandes.`);
         redraw();
+        function cancel() {
+          pastedLines = [];
+          pending?.return({ out: "", code: 130 });
+          pending = undefined;
+          kind = undefined;
+          setAwaitingInput(false);
+          cursor = line.length;
+          redraw();
+          terminal.writeln("^C");
+          historyAt = shell.history.length;
+          newPrompt(shell.prompt());
+        }
+        interrupt.current = cancel;
+        terminal.attachCustomKeyEventHandler((event) => {
+          if (event.type !== "keydown" || kind === "edit") return true;
+          const ctrlC =
+            event.ctrlKey && !event.altKey && !event.metaKey && event.key.toLowerCase() === "c";
+          if (
+            (ctrlC && (pending || !terminal.hasSelection())) ||
+            (event.key === "Escape" && pending)
+          ) {
+            event.preventDefault();
+            cancel();
+            return false;
+          }
+          return true;
+        });
         const keys = terminal.onData((data) => {
           if (kind === "edit") return;
-          if (data === "\x03" && !terminal.hasSelection()) {
-            pastedLines = [];
-            pending?.return({ out: "", code: 130 });
-            pending = undefined;
-            kind = undefined;
-            terminal.writeln("^C");
-            historyAt = shell.history.length;
-            newPrompt(shell.prompt());
+          if (data === "\x03" && (pending || !terminal.hasSelection())) {
+            cancel();
           } else if (data === "\x0c") {
             terminal.reset();
             drawnRow = 0;
@@ -333,6 +359,7 @@ export function LabTerminal({ world, day, onChange }: Props) {
         setStatus("ready");
         cleanup = () => {
           focusInput.current = undefined;
+          interrupt.current = undefined;
           resize.disconnect();
           keys.dispose();
           terminal.dispose();
@@ -351,6 +378,18 @@ export function LabTerminal({ world, day, onChange }: Props) {
     <>
       <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 px-3 pt-2 text-xs text-muted-foreground">
         <span className="hidden sm:inline">↑ ↓ Historique · Tab Compléter · Ctrl+C Annuler</span>
+        {awaitingInput && (
+          <button
+            type="button"
+            onClick={() => {
+              interrupt.current?.();
+              focusInput.current?.();
+            }}
+            className="rounded-md border border-border px-3 py-2 text-accent hover:border-accent"
+          >
+            Annuler la commande
+          </button>
+        )}
         <button
           type="button"
           disabled={status !== "ready"}
